@@ -6,9 +6,9 @@ After=network.target
 Type=simple
 User=lares
 Group=lares
-ExecStart=/usr/local/bin/lares server --config /etc/lares/config.yaml
+ExecStart=/usr/local/bin/lares -config /etc/lares/config.yaml
 Restart=on-failure
-WorkingDirectory=/var/lib/lares
+WorkingDirectory=/srv/media/fileshare
 
 # Hardening attributes
 NoNewPrivileges=true
