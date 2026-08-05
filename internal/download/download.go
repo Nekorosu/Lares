@@ -109,7 +109,7 @@ func (m *Manager) ServeFileDownload(w http.ResponseWriter, r *http.Request, file
 	}
 
 	// Serve content with http.ServeContent (handles HTTP Range automatically)
-	cw := &countingWriter{Writer: outWriter, speedTracker: m.speedTracker}
+	cw := &countingResponseWriter{ResponseWriter: w, writer: outWriter, speedTracker: m.speedTracker}
 	http.ServeContent(cw, r, file.OriginalName, file.CreatedAt, f)
 
 	// Record completed or aborted download bytes
@@ -122,14 +122,15 @@ func (m *Manager) ServeFileDownload(w http.ResponseWriter, r *http.Request, file
 	}
 }
 
-type countingWriter struct {
-	io.Writer
+type countingResponseWriter struct {
+	http.ResponseWriter
+	writer       io.Writer
 	bytesWritten int64
 	speedTracker *speedlimit.SpeedTracker
 }
 
-func (cw *countingWriter) Write(p []byte) (int, error) {
-	n, err := cw.Writer.Write(p)
+func (cw *countingResponseWriter) Write(p []byte) (int, error) {
+	n, err := cw.writer.Write(p)
 	cw.bytesWritten += int64(n)
 	if cw.speedTracker != nil {
 		cw.speedTracker.RecordDownload(int64(n))
