@@ -597,8 +597,8 @@ files.yourdomain.com {
 
       {/* Footer */}
       <footer className="bg-white border-t border-[#e2e2d5] py-4 px-6 text-center text-xs text-[#8c8c7a] flex flex-col sm:flex-row justify-between items-center gap-2">
-        <span>Homeshare Go Service v1.24.0-stable</span>
-        <span>Абсолютная автономность • Без внешних сервисов</span>
+        <span>Homeshare Go Service v1.24.0-stable • GNU GPL v3.0 License</span>
+        <span>Абсолютная автономность • Вся документация в README.md</span>
       </footer>
     </div>
   );
