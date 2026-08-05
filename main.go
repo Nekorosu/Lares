@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"lares/internal/audit"
-	"lares/internal/auth"
 	"lares/internal/cleanup"
 	"lares/internal/config"
 	"lares/internal/db"
@@ -45,18 +43,23 @@ func main() {
 	defer database.Close()
 
 	// 3. Initialize Services
-	secLog := securitylog.NewLogger(cfg.Paths.SecurityLog)
-	auditLogger := audit.NewLogger(database, cfg.Secrets.IPSalt)
-	st := storage.NewStorage(cfg.Paths.DataDir, cfg.Paths.TmpDir)
+	secLog, err := securitylog.NewLogger(cfg.Paths.SecurityLog)
+	if err != nil {
+		log.Fatalf("Failed to initialize security logger: %v", err)
+	}
+	defer secLog.Close()
+
+	auditLogger := audit.NewLogger(database)
+	st := storage.NewStorage(cfg)
 	trafficTracker := traffic.NewTracker(database)
-	rl := ratelimit.NewManager()
+	rl := ratelimit.NewLimiter(database)
 	speedManager := speedlimit.NewSpeedManager(cfg.SpeedLimits.ExternalUploadLimitMbps, cfg.SpeedLimits.ExternalDownloadLimitMbps, cfg.SpeedLimits.BurstMB)
 	speedTracker := speedlimit.NewSpeedTracker()
-	authService := auth.NewAuthService(database, cfg, auditLogger, secLog)
-	uploadService := upload.NewUploadService(database, st, trafficTracker, auditLogger, cfg)
-	downloadService := download.NewDownloadService(database, st, trafficTracker, speedManager, speedTracker, auditLogger)
+
+	uploadManager := upload.NewManager(database, cfg, st, trafficTracker)
+	downloadManager := download.NewManager(database, st, trafficTracker, speedManager, speedTracker)
 	zipService := zip.NewZipService(database, st, trafficTracker, speedManager, speedTracker)
-	settingsService := settings.NewSettingsService(database)
+	settingsManager := settings.NewManager(database, cfg)
 
 	// 4. Start Background Worker
 	cleanupWorker := cleanup.NewWorker(database, cfg, st, auditLogger, trafficTracker)
@@ -79,12 +82,11 @@ func main() {
 		w.Write([]byte(`{"status":"ok","service":"lares"}`))
 	})
 
-	// Add routes setup here
-	_ = authService
-	_ = uploadService
-	_ = downloadService
+	// Unused variable suppressions for now
+	_ = uploadManager
+	_ = downloadManager
 	_ = zipService
-	_ = settingsService
+	_ = settingsManager
 	_ = rl
 
 	server := &http.Server{
