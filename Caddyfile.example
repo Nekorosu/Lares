@@ -1,0 +1,16 @@
+# Caddyfile for homeshare
+
+files.example.duckdns.org {
+    reverse_proxy 127.0.0.1:8090 {
+        header_up X-Real-IP {http.request.remote.host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+
+https://192.168.32.x {
+    tls internal
+    reverse_proxy 127.0.0.1:8090 {
+        header_up X-Real-IP {http.request.remote.host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

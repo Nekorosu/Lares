@@ -1,0 +1,90 @@
+{{ define "admin_content" }}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+  <h1>Пользователи (People)</h1>
+  <button onclick="document.getElementById('createPersonForm').style.display='block'" class="btn btn-primary">Создать пользователя</button>
+</div>
+
+<!-- Create Person Modal / Box -->
+<div id="createPersonForm" class="card" style="display: none; border-left: 4px solid var(--accent);">
+  <h3>Создание нового Person</h3>
+  <form method="POST" action="/admin/people/create">
+    <div class="grid">
+      <div class="form-group">
+        <label>Имя / Метка (Label):</label>
+        <input type="text" name="label" class="form-control" required placeholder="Например: Вася">
+      </div>
+      <div class="form-group">
+        <label>Заметки:</label>
+        <input type="text" name="notes" class="form-control" placeholder="Друг с работы">
+      </div>
+      <div class="form-group">
+        <label>Квота хранилища (GB):</label>
+        <input type="number" name="storage_quota_gb" class="form-control" value="100" required>
+      </div>
+      <div class="form-group">
+        <label>Лимит загрузки за месяц (GB):</label>
+        <input type="number" name="monthly_upload_limit_gb" class="form-control" value="200" required>
+      </div>
+      <div class="form-group">
+        <label>Лимит скачивания за месяц (GB):</label>
+        <input type="number" name="monthly_download_limit_gb" class="form-control" value="300" required>
+      </div>
+      <div class="form-group">
+        <label>Макс. размер файла (GB):</label>
+        <input type="number" name="max_file_size_gb" class="form-control" value="50" required>
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+      <button type="button" onclick="document.getElementById('createPersonForm').style.display='none'" class="btn btn-secondary">Отмена</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Метка</th>
+        <th>Статус</th>
+        <th>Квота хранилища</th>
+        <th>Лимиты Трафика (Up/Down)</th>
+        <th>Макс. файл</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range .People }}
+      <tr>
+        <td>#{{ .ID }}</td>
+        <td><strong>{{ .Label }}</strong> <br><small style="color: var(--text-secondary);">{{ .Notes }}</small></td>
+        <td>
+          {{ if .Enabled }}
+            <span class="badge badge-success">Включен</span>
+          {{ else }}
+            <span class="badge badge-danger">Отключен</span>
+          {{ end }}
+        </td>
+        <td>{{ .StorageQuotaGB }} GB</td>
+        <td>{{ .MonthlyUploadLimitGB }} GB / {{ .MonthlyDownloadLimitGB }} GB</td>
+        <td>{{ .MaxFileSizeGB }} GB</td>
+        <td>
+          <a href="/admin/invites/create?person_id={{ .ID }}" class="btn btn-primary" style="padding: 2px 6px; font-size: 0.8rem;">Создать инвайт</a>
+          <form method="POST" action="/admin/people/toggle" style="display: inline;">
+            <input type="hidden" name="id" value="{{ .ID }}">
+            <button type="submit" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.8rem;">
+              {{ if .Enabled }}Отключить{{ else }}Включить{{ end }}
+            </button>
+          </form>
+          <form method="POST" action="/admin/people/delete" style="display: inline;" onsubmit="return confirm('Удалить пользователя? Файлы останутся как orphaned.');">
+            <input type="hidden" name="id" value="{{ .ID }}">
+            <button type="submit" class="btn btn-danger" style="padding: 2px 6px; font-size: 0.8rem;">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+</div>
+{{ end }}

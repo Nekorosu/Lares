@@ -1,0 +1,80 @@
+# Homeshare Configuration File Example
+# Place at /etc/homeshare/config.yaml
+
+listen: "127.0.0.1:8090"
+base_url: "https://files.example.duckdns.org"
+
+paths:
+  data_dir: "/srv/media/fileshare/data"
+  tmp_dir: "/srv/media/fileshare/tmp"
+  db_path: "/srv/media/fileshare/db/homeshare.db"
+  backup_dir: "/home/fileshare-backup"
+  security_log: "/var/log/homeshare/security.log"
+
+network:
+  local_cidrs:
+    - "127.0.0.1/32"
+    - "::1/128"
+    - "192.168.32.0/24"
+
+secrets:
+  session_secret: ""  # Random secret for signing cookie session; auto-generated if blank
+  ip_salt: ""        # Salt for hashing IP addresses in audit log
+
+limits:
+  default_storage_quota_gb: 100
+  default_monthly_upload_limit_gb: 200
+  default_monthly_download_limit_gb: 300
+  default_max_file_size_gb: 50
+  default_max_concurrent_uploads: 1
+  default_expiry_days: 14
+
+disk_reserve:
+  min_free_space_gb: 40
+  critical_free_space_gb: 20
+  min_free_inodes: 100000
+
+speed_limits:
+  external_upload_limit_mbps: 250
+  external_download_limit_mbps: 250
+  burst_mb: 16
+
+zip_limits:
+  max_files: 100
+  max_total_gb: 50
+
+sessions:
+  user_idle_days: 30
+  user_absolute_days: 90
+  admin_idle_hours: 12
+  admin_absolute_days: 7
+
+invite_defaults:
+  expires_hours: 24
+  max_activations: 1
+
+suspicious_extensions:
+  - "exe"
+  - "msi"
+  - "msp"
+  - "bat"
+  - "cmd"
+  - "com"
+  - "scr"
+  - "vbs"
+  - "vbe"
+  - "js"
+  - "jse"
+  - "ws"
+  - "wsf"
+  - "wsh"
+  - "ps1"
+  - "psm1"
+  - "sh"
+  - "bash"
+  - "dll"
+  - "ocx"
+  - "jar"
+  - "apk"
+  - "hta"
+  - "cpl"

@@ -1,0 +1,119 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"homeshare/internal/audit"
+	"homeshare/internal/auth"
+	"homeshare/internal/cleanup"
+	"homeshare/internal/config"
+	"homeshare/internal/db"
+	"homeshare/internal/download"
+	"homeshare/internal/ratelimit"
+	"homeshare/internal/securitylog"
+	"homeshare/internal/settings"
+	"homeshare/internal/speedlimit"
+	"homeshare/internal/storage"
+	"homeshare/internal/traffic"
+	"homeshare/internal/upload"
+	"homeshare/internal/zip"
+)
+
+func main() {
+	configPath := flag.String("config", "/etc/homeshare/config.yaml", "Path to config file")
+	flag.Parse()
+
+	// 1. Load configuration
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// 2. Initialize Database
+	database, err := db.InitDB(cfg.Paths.DBPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer database.Close()
+
+	// 3. Initialize Services
+	secLog := securitylog.NewLogger(cfg.Paths.SecurityLog)
+	auditLogger := audit.NewLogger(database, cfg.Secrets.IPSalt)
+	st := storage.NewStorage(cfg.Paths.DataDir, cfg.Paths.TmpDir)
+	trafficTracker := traffic.NewTracker(database)
+	rl := ratelimit.NewManager()
+	speedManager := speedlimit.NewSpeedManager(cfg.SpeedLimits.ExternalUploadLimitMbps, cfg.SpeedLimits.ExternalDownloadLimitMbps, cfg.SpeedLimits.BurstMB)
+	speedTracker := speedlimit.NewSpeedTracker()
+	authService := auth.NewAuthService(database, cfg, auditLogger, secLog)
+	uploadService := upload.NewUploadService(database, st, trafficTracker, auditLogger, cfg)
+	downloadService := download.NewDownloadService(database, st, trafficTracker, speedManager, speedTracker, auditLogger)
+	zipService := zip.NewZipService(database, st, trafficTracker, speedManager, speedTracker)
+	settingsService := settings.NewSettingsService(database)
+
+	// 4. Start Background Worker
+	cleanupWorker := cleanup.NewWorker(database, cfg, st, auditLogger, trafficTracker)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go cleanupWorker.Start(ctx)
+
+	// 5. Mux & Static Web Handling
+	mux := http.NewServeMux()
+
+	// Serve Static Files
+	fs := http.FileServer(http.Dir("web/static"))
+	mux.Handle("/static/", http.StripPrefix("/static/", fs))
+
+	// Healthcheck
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok","service":"homeshare"}`))
+	})
+
+	// Add routes setup here
+	_ = authService
+	_ = uploadService
+	_ = downloadService
+	_ = zipService
+	_ = settingsService
+	_ = rl
+
+	server := &http.Server{
+		Addr:         cfg.Listen,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Minute,
+		WriteTimeout: 30 * time.Minute,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// 6. Graceful Shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("Homeshare server starting on http://%s", cfg.Listen)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server HTTP error: %v", err)
+		}
+	}()
+
+	<-stop
+	log.Println("Shutting down Homeshare server gracefully...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server forced shutdown: %v", err)
+	}
+	log.Println("Homeshare server stopped.")
+}

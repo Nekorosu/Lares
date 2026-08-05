@@ -1,0 +1,104 @@
+{{ define "content" }}
+<div class="grid">
+  <!-- Upload Box -->
+  <div class="card" style="grid-column: span 2;">
+    <h2>Загрузка файлов</h2>
+    <div class="form-group">
+      <label for="expirySelect">Срок хранения файла:</label>
+      <select id="expirySelect" class="form-control" style="max-width: 200px;">
+        <option value="1">1 день</option>
+        <option value="7">7 дней</option>
+        <option value="14" selected>14 дней (по умолчанию)</option>
+        <option value="30">30 дней</option>
+      </select>
+    </div>
+
+    <div id="dropzone" class="dropzone">
+      <p style="font-size: 1.1rem; font-weight: 500;">Перетащите файлы сюда или нажмите для выбора</p>
+      <p style="color: var(--text-secondary); font-size: 0.85rem;">Файлы загружаются безопасными фрагментами</p>
+      <input type="file" id="fileInput" multiple style="display: none;">
+    </div>
+
+    <div id="uploadStatus" style="margin-top: 12px; font-weight: 500;"></div>
+    <div class="progress-bar" style="margin-top: 8px;">
+      <div id="uploadProgress" class="progress-fill" style="width: 0%;"></div>
+    </div>
+  </div>
+
+  <!-- Quota Info Card -->
+  <div class="card">
+    <h3>Мои квоты</h3>
+    <div style="margin-bottom: 12px;">
+      <div><strong>Хранилище:</strong> {{ .UsedStorageMB }} MB / {{ .QuotaStorageMB }} MB</div>
+      <div class="progress-bar"><div class="progress-fill" style="width: {{ .StoragePercent }}%;"></div></div>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <div><strong>Загрузка за месяц:</strong> {{ .UploadTrafficMB }} MB / {{ .UploadLimitMB }} MB</div>
+      <div class="progress-bar"><div class="progress-fill" style="width: {{ .UploadTrafficPercent }}%;"></div></div>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <div><strong>Скачивание за месяц:</strong> {{ .DownloadTrafficMB }} MB / {{ .DownloadLimitMB }} MB</div>
+      <div class="progress-bar"><div class="progress-fill" style="width: {{ .DownloadTrafficPercent }}%;"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Files List -->
+<div class="card">
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <h2>Общее хранилище файлов</h2>
+    <button id="downloadZipBtn" class="btn btn-secondary">Скачать выбранные в ZIP</button>
+  </div>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th><input type="checkbox" id="selectAll"></th>
+        <th>Имя файла</th>
+        <th>Размер</th>
+        <th>Загрузил</th>
+        <th>Дата</th>
+        <th>Срок хранения</th>
+        <th>Статус</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range .Files }}
+      <tr>
+        <td><input type="checkbox" class="file-checkbox" value="{{ .ID }}"></td>
+        <td><strong>{{ .OriginalName }}</strong></td>
+        <td>{{ .SizeMB }} MB</td>
+        <td>{{ .UploaderLabel }}</td>
+        <td>{{ .FormattedDate }}</td>
+        <td>{{ .FormattedExpiry }}</td>
+        <td>
+          {{ if eq .Status "quarantined" }}
+            <span class="badge badge-warning">Ожидает проверки</span>
+          {{ else }}
+            <span class="badge badge-success">Доступен</span>
+          {{ end }}
+        </td>
+        <td>
+          {{ if eq .Status "ready" }}
+            <a href="/download/{{ .ID }}" class="btn btn-primary" style="padding: 4px 8px; font-size: 0.8rem;">Скачать</a>
+            {{ if .IsPreviewable }}
+              <a href="/download/{{ .ID }}?inline=true" target="_blank" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8rem;">Просмотр</a>
+            {{ end }}
+          {{ end }}
+          {{ if and (eq .PersonID $.Person.ID) (not .Protected) }}
+            <form method="POST" action="/files/delete/{{ .ID }}" style="display: inline;" onsubmit="return confirm('Удалить файл?');">
+              <button type="submit" class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8rem;">Удалить</button>
+            </form>
+          {{ end }}
+        </td>
+      </tr>
+      {{ else }}
+      <tr>
+        <td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">Нет доступных файлов</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+</div>
+{{ end }}

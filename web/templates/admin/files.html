@@ -1,0 +1,77 @@
+{{ define "admin_content" }}
+<h1>Все файлы в системе</h1>
+
+<div class="card">
+  <form method="GET" action="/admin/files" style="display: flex; gap: 12px; margin-bottom: 16px;">
+    <input type="text" name="q" class="form-control" placeholder="Поиск по имени файла..." value="{{ .SearchQuery }}">
+    <select name="status" class="form-control" style="width: 180px;">
+      <option value="">Все статусы</option>
+      <option value="ready" {{ if eq .StatusFilter "ready" }}selected{{ end }}>Ready</option>
+      <option value="quarantined" {{ if eq .StatusFilter "quarantined" }}selected{{ end }}>Quarantined</option>
+    </select>
+    <button type="submit" class="btn btn-primary">Искать</button>
+  </form>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Имя файла</th>
+        <th>Размер</th>
+        <th>Пользователь</th>
+        <th>Статус</th>
+        <th>Флаги</th>
+        <th>Истекает</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range .Files }}
+      <tr>
+        <td><code>{{ .ID }}</code></td>
+        <td><strong>{{ .OriginalName }}</strong></td>
+        <td>{{ .SizeMB }} MB</td>
+        <td>{{ .UploaderLabel }}</td>
+        <td>
+          {{ if eq .Status "quarantined" }}
+            <span class="badge badge-warning">Карантин</span>
+          {{ else }}
+            <span class="badge badge-success">Готов</span>
+          {{ end }}
+        </td>
+        <td>
+          {{ if .Protected }}<span class="badge badge-success">Protected</span> {{ end }}
+          {{ if .KeepForever }}<span class="badge badge-success">KeepForever</span> {{ end }}
+          {{ if .Flagged }}<span class="badge badge-danger">Flagged ({{ .FlagReason }})</span>{{ end }}
+        </td>
+        <td>{{ .FormattedExpiry }}</td>
+        <td>
+          {{ if eq .Status "quarantined" }}
+            <form method="POST" action="/admin/quarantine/approve" style="display: inline;">
+              <input type="hidden" name="id" value="{{ .ID }}">
+              <button type="submit" class="btn btn-primary" style="padding: 2px 6px; font-size: 0.8rem;">Одобрить</button>
+            </form>
+          {{ end }}
+          <form method="POST" action="/admin/files/toggle-protected" style="display: inline;">
+            <input type="hidden" name="id" value="{{ .ID }}">
+            <button type="submit" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.8rem;">
+              {{ if .Protected }}-Protect{{ else }}+Protect{{ end }}
+            </button>
+          </form>
+          <form method="POST" action="/admin/files/toggle-forever" style="display: inline;">
+            <input type="hidden" name="id" value="{{ .ID }}">
+            <button type="submit" class="btn btn-secondary" style="padding: 2px 6px; font-size: 0.8rem;">
+              {{ if .KeepForever }}-Forever{{ else }}+Forever{{ end }}
+            </button>
+          </form>
+          <form method="POST" action="/admin/files/delete" style="display: inline;" onsubmit="return confirm('Удалить файл навсегда?');">
+            <input type="hidden" name="id" value="{{ .ID }}">
+            <button type="submit" class="btn btn-danger" style="padding: 2px 6px; font-size: 0.8rem;">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+</div>
+{{ end }}

@@ -1,0 +1,6 @@
+{
+  "name": "homeshare",
+  "description": "Легковесный self-hosted сервис для обмена файлами на Go",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

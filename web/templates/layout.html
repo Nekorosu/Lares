@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ .Title }} - homeshare</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand">homeshare</div>
+    <div class="user-nav">
+      {{ if .Person }}
+        <span>Пользователь: <strong>{{ .Person.Label }}</strong></span> |
+        <a href="/logout" class="btn btn-secondary">Выйти со всех устройств</a>
+      {{ else if .IsAdmin }}
+        <span>Администратор</span> |
+        <a href="/admin/logout" class="btn btn-secondary">Выйти</a>
+      {{ end }}
+    </div>
+  </header>
+  <main class="container">
+    {{ template "content" . }}
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
