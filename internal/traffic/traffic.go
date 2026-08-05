@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"homeshare/internal/models"
+	"lares/internal/models"
 )
 
 type Tracker struct {

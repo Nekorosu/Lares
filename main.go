@@ -11,24 +11,24 @@ import (
 	"syscall"
 	"time"
 
-	"homeshare/internal/audit"
-	"homeshare/internal/auth"
-	"homeshare/internal/cleanup"
-	"homeshare/internal/config"
-	"homeshare/internal/db"
-	"homeshare/internal/download"
-	"homeshare/internal/ratelimit"
-	"homeshare/internal/securitylog"
-	"homeshare/internal/settings"
-	"homeshare/internal/speedlimit"
-	"homeshare/internal/storage"
-	"homeshare/internal/traffic"
-	"homeshare/internal/upload"
-	"homeshare/internal/zip"
+	"lares/internal/audit"
+	"lares/internal/auth"
+	"lares/internal/cleanup"
+	"lares/internal/config"
+	"lares/internal/db"
+	"lares/internal/download"
+	"lares/internal/ratelimit"
+	"lares/internal/securitylog"
+	"lares/internal/settings"
+	"lares/internal/speedlimit"
+	"lares/internal/storage"
+	"lares/internal/traffic"
+	"lares/internal/upload"
+	"lares/internal/zip"
 )
 
 func main() {
-	configPath := flag.String("config", "/etc/homeshare/config.yaml", "Path to config file")
+	configPath := flag.String("config", "/etc/lares/config.yaml", "Path to config file")
 	flag.Parse()
 
 	// 1. Load configuration
@@ -76,7 +76,7 @@ func main() {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok","service":"homeshare"}`))
+		w.Write([]byte(`{"status":"ok","service":"lares"}`))
 	})
 
 	// Add routes setup here
@@ -100,14 +100,14 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Homeshare server starting on http://%s", cfg.Listen)
+		log.Printf("Lares server starting on http://%s", cfg.Listen)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server HTTP error: %v", err)
 		}
 	}()
 
 	<-stop
-	log.Println("Shutting down Homeshare server gracefully...")
+	log.Println("Shutting down Lares server gracefully...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
@@ -115,5 +115,5 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server forced shutdown: %v", err)
 	}
-	log.Println("Homeshare server stopped.")
+	log.Println("Lares server stopped.")
 }

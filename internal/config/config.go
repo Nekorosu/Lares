@@ -89,9 +89,9 @@ func DefaultConfig() *Config {
 		Paths: PathsConfig{
 			DataDir:     "/srv/media/fileshare/data",
 			TmpDir:      "/srv/media/fileshare/tmp",
-			DBPath:      "/srv/media/fileshare/db/homeshare.db",
+			DBPath:      "/srv/media/fileshare/db/lares.db",
 			BackupDir:   "/home/fileshare-backup",
-			SecurityLog: "/var/log/homeshare/security.log",
+			SecurityLog: "/var/log/lares/security.log",
 		},
 		Network: NetworkConfig{
 			LocalCIDRs: []string{"127.0.0.1/32", "::1/128", "192.168.32.0/24"},

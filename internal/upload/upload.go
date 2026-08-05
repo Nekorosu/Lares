@@ -13,11 +13,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"homeshare/internal/auth"
-	"homeshare/internal/config"
-	"homeshare/internal/models"
-	"homeshare/internal/storage"
-	"homeshare/internal/traffic"
+	"lares/internal/auth"
+	"lares/internal/config"
+	"lares/internal/models"
+	"lares/internal/storage"
+	"lares/internal/traffic"
 )
 
 type Manager struct {

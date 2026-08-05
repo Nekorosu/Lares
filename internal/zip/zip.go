@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"homeshare/internal/models"
-	"homeshare/internal/speedlimit"
-	"homeshare/internal/storage"
-	"homeshare/internal/traffic"
+	"lares/internal/models"
+	"lares/internal/speedlimit"
+	"lares/internal/storage"
+	"lares/internal/traffic"
 )
 
 type ZipService struct {
@@ -81,7 +81,7 @@ func (zs *ZipService) StreamZip(w http.ResponseWriter, r *http.Request, fileIDs 
 		}
 	}
 
-	zipName := fmt.Sprintf("homeshare_archive_%s.zip", time.Now().Format("20060102_150405"))
+	zipName := fmt.Sprintf("lares_archive_%s.zip", time.Now().Format("20060102_150405"))
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", zipName))

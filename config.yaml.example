@@ -1,5 +1,5 @@
-# Homeshare Configuration File Example
-# Place at /etc/homeshare/config.yaml
+# Lares Configuration File Example
+# Place at /etc/lares/config.yaml
 
 listen: "127.0.0.1:8090"
 base_url: "https://files.example.duckdns.org"
@@ -7,9 +7,9 @@ base_url: "https://files.example.duckdns.org"
 paths:
   data_dir: "/srv/media/fileshare/data"
   tmp_dir: "/srv/media/fileshare/tmp"
-  db_path: "/srv/media/fileshare/db/homeshare.db"
+  db_path: "/srv/media/fileshare/db/lares.db"
   backup_dir: "/home/fileshare-backup"
-  security_log: "/var/log/homeshare/security.log"
+  security_log: "/var/log/lares/security.log"
 
 network:
   local_cidrs:

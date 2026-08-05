@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"homeshare/internal/config"
+	"lares/internal/config"
 )
 
 type Manager struct {

@@ -1,4 +1,4 @@
-// Homeshare Vanilla JS Client
+// Lares Vanilla JS Client
 const CHUNK_SIZE = 32 * 1024 * 1024; // 32MB
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -69,7 +69,7 @@ async function uploadFileChunked(file, expiryDays) {
     const uploadSecret = data.upload_secret;
 
     // Save secrets in localStorage for resume/cancel
-    localStorage.setItem(`homeshare_upload_${uploadId}`, JSON.stringify({
+    localStorage.setItem(`lares_upload_${uploadId}`, JSON.stringify({
       id: uploadId,
       secret: uploadSecret,
       filename: file.name
@@ -115,7 +115,7 @@ async function uploadFileChunked(file, expiryDays) {
       throw new Error(errData.error || 'Ошибка завершения загрузки');
     }
 
-    localStorage.removeItem(`homeshare_upload_${uploadId}`);
+    localStorage.removeItem(`lares_upload_${uploadId}`);
     if (statusEl) statusEl.textContent = `Файл ${file.name} успешно загружен!`;
     setTimeout(() => window.location.reload(), 1000);
 

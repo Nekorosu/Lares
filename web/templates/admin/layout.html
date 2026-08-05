@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ .Title }} - Панель администратора homeshare</title>
+  <title>{{ .Title }} - Панель администратора Lares</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <header class="header">
-    <div class="brand">homeshare</div>
+    <div class="brand">Lares</div>
     <div style="display: flex; gap: 12px; align-items: center;">
       <a href="/" class="btn btn-secondary">На главную</a>
       <a href="/admin/logout" class="btn btn-danger">Выйти</a>
@@ -16,7 +16,7 @@
   </header>
   <div class="admin-layout">
     <aside class="sidebar">
-      <h1 class="serif">homeshare</h1>
+      <h1 class="serif">Lares</h1>
       <nav>
         <a href="/admin" class="{{ if eq .Section "dashboard" }}active{{ end }}"><span>▣</span> Дашборд</a>
         <a href="/admin/people" class="{{ if eq .Section "people" }}active{{ end }}"><span>☻</span> Пользователи</a>
@@ -30,7 +30,7 @@
         <a href="/admin/settings" class="{{ if eq .Section "settings" }}active{{ end }}"><span>⚙</span> Настройки</a>
       </nav>
       <div style="margin-top: auto; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; opacity: 0.7;">
-        Администратор<br>homeshare System
+        Администратор<br>Lares System
       </div>
     </aside>
     <main class="main-content">

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"homeshare/internal/audit"
-	"homeshare/internal/config"
-	"homeshare/internal/models"
-	"homeshare/internal/storage"
-	"homeshare/internal/traffic"
+	"lares/internal/audit"
+	"lares/internal/config"
+	"lares/internal/models"
+	"lares/internal/storage"
+	"lares/internal/traffic"
 )
 
 type Worker struct {
@@ -157,7 +157,7 @@ func (w *Worker) RunDailyBackup() {
 		return
 	}
 
-	backupName := fmt.Sprintf("homeshare_backup_%s.db", time.Now().Format("20060102_150405"))
+	backupName := fmt.Sprintf("lares_backup_%s.db", time.Now().Format("20060102_150405"))
 	backupPath := filepath.Join(w.cfg.Paths.BackupDir, backupName)
 
 	// Safe VACUUM INTO for online SQLite backup
@@ -175,7 +175,7 @@ func (w *Worker) RunDailyBackup() {
 
 	var backupFiles []os.DirEntry
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "homeshare_backup_") {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "lares_backup_") {
 			backupFiles = append(backupFiles, entry)
 		}
 	}

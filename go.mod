@@ -1,4 +1,4 @@
-module homeshare
+module lares
 
 go 1.25.0
 

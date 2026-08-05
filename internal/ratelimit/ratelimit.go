@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"homeshare/internal/models"
+	"lares/internal/models"
 )
 
 type Limiter struct {

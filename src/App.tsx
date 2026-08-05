@@ -40,16 +40,16 @@ export default function App() {
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
-  const generatedYaml = `# Homeshare Configuration File
+  const generatedYaml = `# Lares Configuration File
 listen: "${cfgListen}"
 base_url: "${cfgBaseUrl}"
 
 paths:
   data_dir: "${cfgDataDir}"
   tmp_dir: "${cfgDataDir.replace('/data', '/tmp')}"
-  db_path: "${cfgDataDir.replace('/data', '/db')}/homeshare.db"
+  db_path: "${cfgDataDir.replace('/data', '/db')}/lares.db"
   backup_dir: "/home/fileshare-backup"
-  security_log: "/var/log/homeshare/security.log"
+  security_log: "/var/log/lares/security.log"
 
 network:
   local_cidrs:
@@ -80,10 +80,10 @@ zip_limits:
       <header className="bg-white border-b border-[#e2e2d5] px-6 py-4 flex flex-wrap justify-between items-center shadow-xs">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-[#5A5A40] text-white flex items-center justify-center font-serif text-xl font-bold shadow-xs">
-            h
+            L
           </div>
           <div>
-            <h1 className="font-serif text-2xl font-semibold tracking-tight text-[#1a1a15]">homeshare</h1>
+            <h1 className="font-serif text-2xl font-semibold tracking-tight text-[#1a1a15]">Lares</h1>
             <p className="text-xs text-[#8c8c7a] font-medium uppercase tracking-wider">Self-Hosted Go File Exchange Server</p>
           </div>
         </div>
@@ -141,7 +141,7 @@ zip_limits:
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
                   Go Backend Architecture (Caddy Reverse Proxy)
                 </div>
-                <h2 className="font-serif text-2xl font-medium">Сервер Homeshare готовит файлы для обмена</h2>
+                <h2 className="font-serif text-2xl font-medium">Сервер Lares готовит файлы для обмена</h2>
                 <p className="text-sm text-[#e2e2d5]">
                   Безопасный файлообменник для семейной или корпоративной сети с токенами доступа, квотами и фильтрацией расширений.
                 </p>
@@ -240,7 +240,7 @@ zip_limits:
                     </tr>
 
                     <tr className="hover:bg-[#fcfcf9] transition-colors">
-                      <td className="py-3.5 px-4 font-medium text-[#1a1a15]">homeshare_db_backup.sql</td>
+                      <td className="py-3.5 px-4 font-medium text-[#1a1a15]">lares_db_backup.sql</td>
                       <td className="py-3.5 px-4 text-[#8c8c7a]">42.8 MB</td>
                       <td className="py-3.5 px-4 text-[#1a1a15]">system_auto</td>
                       <td className="py-3.5 px-4 text-[#8c8c7a]">Бессрочно</td>
@@ -283,7 +283,7 @@ zip_limits:
         {activeTab === 'guide' && (
           <div className="space-y-8">
             <div>
-              <h2 className="font-serif text-3xl text-[#1a1a15]">Инструкция по развертыванию Homeshare на своем сервере</h2>
+              <h2 className="font-serif text-3xl text-[#1a1a15]">Инструкция по развертыванию Lares на своем сервере</h2>
               <p className="text-sm text-[#8c8c7a] mt-1">
                 Пошаговое руководство по сборке Go-бинарника, настройке SQLite, Caddy и systemd службы на Linux VPS/сервере.
               </p>
@@ -303,25 +303,25 @@ zip_limits:
 
               <div className="bg-[#1e293b] text-[#f8fafc] p-4 rounded-2xl font-mono text-xs relative overflow-x-auto">
                 <button 
-                  onClick={() => copyToClipboard(`git clone https://github.com/your-user/homeshare.git
-cd homeshare
-go build -o homeshare main.go`, 'step1')}
+                  onClick={() => copyToClipboard(`git clone https://github.com/your-user/lares.git
+cd lares
+go build -o lares main.go`, 'step1')}
                   className="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-1 text-[11px]"
                 >
                   {copiedSection === 'step1' ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                   Копировать
                 </button>
                 <pre>{`# 1. Клонирование репозитория и переход в директорию
-git clone https://github.com/your-repo/homeshare.git
-cd homeshare
+git clone https://github.com/your-repo/lares.git
+cd lares
 
-# 2. Сборка бинарного файла Homeshare
-go build -o homeshare main.go
+# 2. Сборка бинарного файла Lares
+go build -o lares main.go
 
 # 3. Создание необходимой директории на сервере
 sudo mkdir -p /srv/media/fileshare/{data,tmp,db}
-sudo mkdir -p /etc/homeshare /var/log/homeshare /home/fileshare-backup
-sudo chmod -R 750 /srv/media/fileshare /etc/homeshare`}</pre>
+sudo mkdir -p /etc/lares /var/log/lares /home/fileshare-backup
+sudo chmod -R 750 /srv/media/fileshare /etc/lares`}</pre>
               </div>
             </div>
 
@@ -331,7 +331,7 @@ sudo chmod -R 750 /srv/media/fileshare /etc/homeshare`}</pre>
                 <div className="w-8 h-8 rounded-full bg-[#5A5A40] text-white font-bold flex items-center justify-center text-sm">
                   2
                 </div>
-                <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Конфигурирование (/etc/homeshare/config.yaml)</h3>
+                <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Конфигурирование (/etc/lares/config.yaml)</h3>
               </div>
               <p className="text-sm text-[#475569]">
                 Скопируйте пример файла конфигурации или сгенерируйте собственный во вкладке «Конфигуратор».
@@ -339,15 +339,15 @@ sudo chmod -R 750 /srv/media/fileshare /etc/homeshare`}</pre>
 
               <div className="bg-[#1e293b] text-[#f8fafc] p-4 rounded-2xl font-mono text-xs relative overflow-x-auto">
                 <button 
-                  onClick={() => copyToClipboard(`sudo cp config.yaml.example /etc/homeshare/config.yaml
-sudo chmod 640 /etc/homeshare/config.yaml`, 'step2')}
+                  onClick={() => copyToClipboard(`sudo cp config.yaml.example /etc/lares/config.yaml
+sudo chmod 640 /etc/lares/config.yaml`, 'step2')}
                   className="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-1 text-[11px]"
                 >
                   {copiedSection === 'step2' ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                   Копировать
                 </button>
-                <pre>{`sudo cp config.yaml.example /etc/homeshare/config.yaml
-sudo nano /etc/homeshare/config.yaml`}</pre>
+                <pre>{`sudo cp config.yaml.example /etc/lares/config.yaml
+sudo nano /etc/lares/config.yaml`}</pre>
               </div>
             </div>
 
@@ -360,32 +360,32 @@ sudo nano /etc/homeshare/config.yaml`}</pre>
                 <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Автозапуск через Systemd Service</h3>
               </div>
               <p className="text-sm text-[#475569]">
-                Установите службу `homeshare.service`, чтобы файлообменник автоматически запускался при старте системы.
+                Установите службу \`lares.service\`, чтобы файлообменник автоматически запускался при старте системы.
               </p>
 
               <div className="bg-[#1e293b] text-[#f8fafc] p-4 rounded-2xl font-mono text-xs relative overflow-x-auto">
                 <button 
-                  onClick={() => copyToClipboard(`sudo cp homeshare /usr/local/bin/homeshare
-sudo cp homeshare.service /etc/systemd/system/
-sudo useradd -r -s /bin/false homeshare
-sudo chown -R homeshare:homeshare /srv/media/fileshare /etc/homeshare /var/log/homeshare
+                  onClick={() => copyToClipboard(`sudo cp lares /usr/local/bin/lares
+sudo cp lares.service /etc/systemd/system/
+sudo useradd -r -s /bin/false lares
+sudo chown -R lares:lares /srv/media/fileshare /etc/lares /var/log/lares
 sudo systemctl daemon-reload
-sudo systemctl enable --now homeshare`, 'step3')}
+sudo systemctl enable --now lares`, 'step3')}
                   className="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-1 text-[11px]"
                 >
                   {copiedSection === 'step3' ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                   Копировать
                 </button>
                 <pre>{`# 1. Перемещение бинарного файла и файла сервиса
-sudo cp homeshare /usr/local/bin/homeshare
-sudo cp homeshare.service /etc/systemd/system/
+sudo cp lares /usr/local/bin/lares
+sudo cp lares.service /etc/systemd/system/
 
 # 2. Создание системного пользователя и запуск
-sudo useradd -r -s /bin/false homeshare
-sudo chown -R homeshare:homeshare /srv/media/fileshare /etc/homeshare /var/log/homeshare
+sudo useradd -r -s /bin/false lares
+sudo chown -R lares:lares /srv/media/fileshare /etc/lares /var/log/lares
 sudo systemctl daemon-reload
-sudo systemctl enable --now homeshare
-sudo systemctl status homeshare`}</pre>
+sudo systemctl enable --now lares
+sudo systemctl status lares`}</pre>
               </div>
             </div>
 
@@ -524,7 +524,7 @@ files.yourdomain.com {
         {activeTab === 'architecture' && (
           <div className="space-y-6">
             <div>
-              <h2 className="font-serif text-3xl text-[#1a1a15]">Архитектура безопасности Homeshare</h2>
+              <h2 className="font-serif text-3xl text-[#1a1a15]">Архитектура безопасности Lares</h2>
               <p className="text-sm text-[#8c8c7a] mt-1">
                 Ключевые механизмы защиты файлов, сессий пользователей и системных ресурсов.
               </p>
@@ -597,7 +597,7 @@ files.yourdomain.com {
 
       {/* Footer */}
       <footer className="bg-white border-t border-[#e2e2d5] py-4 px-6 text-center text-xs text-[#8c8c7a] flex flex-col sm:flex-row justify-between items-center gap-2">
-        <span>Homeshare Go Service v1.24.0-stable • GNU GPL v3.0 License</span>
+        <span>Lares Go Service v1.24.0-stable • GNU GPL v3.0 License</span>
         <span>Абсолютная автономность • Вся документация в README.md</span>
       </footer>
     </div>

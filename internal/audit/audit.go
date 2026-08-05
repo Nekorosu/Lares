@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"time"
 
-	"homeshare/internal/models"
+	"lares/internal/models"
 )
 
 type Logger struct {

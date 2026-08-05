@@ -1,9 +1,9 @@
-# Homeshare (Go File Exchange Server)
+# Lares (Go File Exchange Server)
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8.svg)](https://golang.org)
 
-**Homeshare** — это высокопроизводительный автономный сервер обмена файлами, разработанный на языке **Go** с использованием базы данных **SQLite**, поддержкой двухфакторной аутентификации (2FA TOTP), карантином исполняемых файлов, ограничениями трафика и динамическим ZIP-стримингом.
+**Lares** — это высокопроизводительный автономный сервер обмена файлами, разработанный на языке **Go** с использованием базы данных **SQLite**, поддержкой двухфакторной аутентификации (2FA TOTP), карантином исполняемых файлов, ограничениями трафика и динамическим ZIP-стримингом.
 
 Сервер спроектирован для установки на собственный домашний или корпоративный сервер (VPS / Bare-Metal Linux), обеспечивая 100% приватность без сторонних облачных сервисов.
 
@@ -41,11 +41,11 @@
 
 ```bash
 # Клонируйте репозиторий
-git clone https://github.com/your-username/homeshare.git
-cd homeshare
+git clone https://github.com/your-username/lares.git
+cd lares
 
 # Скомпилируйте исполняемый Go-файл
-go build -o homeshare main.go
+go build -o lares main.go
 ```
 
 ### 2. Подготовка каталогов на сервере
@@ -53,22 +53,22 @@ go build -o homeshare main.go
 ```bash
 # Создайте рабочие папки для файлов, временных файлов и базы данных
 sudo mkdir -p /srv/media/fileshare/{data,tmp,db}
-sudo mkdir -p /etc/homeshare /var/log/homeshare /home/fileshare-backup
+sudo mkdir -p /etc/lares /var/log/lares /home/fileshare-backup
 
 # Ограничьте права доступа
-sudo chmod -R 750 /srv/media/fileshare /etc/homeshare
+sudo chmod -R 750 /srv/media/fileshare /etc/lares
 ```
 
 ### 3. Настройка конфигурации (`config.yaml`)
 
-Скопируйте пример файла конфигурации в `/etc/homeshare/config.yaml`:
+Скопируйте пример файла конфигурации в `/etc/lares/config.yaml`:
 
 ```bash
-sudo cp config.yaml.example /etc/homeshare/config.yaml
-sudo chmod 640 /etc/homeshare/config.yaml
+sudo cp config.yaml.example /etc/lares/config.yaml
+sudo chmod 640 /etc/lares/config.yaml
 ```
 
-Отредактируйте необходимые параметры в `/etc/homeshare/config.yaml`:
+Отредактируйте необходимые параметры в `/etc/lares/config.yaml`:
 
 ```yaml
 listen: "127.0.0.1:8090"
@@ -77,9 +77,9 @@ base_url: "https://files.yourdomain.com"
 paths:
   data_dir: "/srv/media/fileshare/data"
   tmp_dir: "/srv/media/fileshare/tmp"
-  db_path: "/srv/media/fileshare/db/homeshare.db"
+  db_path: "/srv/media/fileshare/db/lares.db"
   backup_dir: "/home/fileshare-backup"
-  security_log: "/var/log/homeshare/security.log"
+  security_log: "/var/log/lares/security.log"
 
 network:
   local_cidrs:
@@ -106,21 +106,21 @@ speed_limits:
 
 ```bash
 # Переместите бинарник в системную директорию
-sudo cp homeshare /usr/local/bin/homeshare
+sudo cp lares /usr/local/bin/lares
 
 # Скопируйте файл службы
-sudo cp homeshare.service /etc/systemd/system/
+sudo cp lares.service /etc/systemd/system/
 
 # Создайте отдельного системного пользователя
-sudo useradd -r -s /bin/false homeshare
-sudo chown -R homeshare:homeshare /srv/media/fileshare /etc/homeshare /var/log/homeshare
+sudo useradd -r -s /bin/false lares
+sudo chown -R lares:lares /srv/media/fileshare /etc/lares /var/log/lares
 
 # Перезагрузите systemd и запустите службу
 sudo systemctl daemon-reload
-sudo systemctl enable --now homeshare
+sudo systemctl enable --now lares
 
 # Проверьте статус службы
-sudo systemctl status homeshare
+sudo systemctl status lares
 ```
 
 ### 5. Настройка Reverse Proxy (Caddy)
@@ -149,7 +149,7 @@ sudo systemctl reload caddy
 .
 ├── main.go               # Точка входа Go-сервера
 ├── config.yaml.example   # Шаблон конфигурационного файла
-├── homeshare.service     # Юнит-файл systemd для автозапуска
+├── lares.service         # Юнит-файл systemd для автозапуска
 ├── Caddyfile.example     # Пример конфигурации прокси Caddy
 ├── LICENSE               # Текст лицензии GNU General Public License v3.0
 ├── README.md             # Документация проекта

@@ -1,0 +1,20 @@
+[Unit]
+Description=Lares Self-Hosted File Exchange Service
+After=network.target
+
+[Service]
+Type=simple
+User=lares
+Group=lares
+ExecStart=/usr/local/bin/lares server --config /etc/lares/config.yaml
+Restart=on-failure
+WorkingDirectory=/var/lib/lares
+
+# Hardening attributes
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/lares /etc/lares
+
+[Install]
+WantedBy=multi-user.target

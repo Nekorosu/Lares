@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"homeshare/internal/models"
-	"homeshare/internal/speedlimit"
-	"homeshare/internal/storage"
-	"homeshare/internal/traffic"
+	"lares/internal/models"
+	"lares/internal/speedlimit"
+	"lares/internal/storage"
+	"lares/internal/traffic"
 )
 
 type Manager struct {

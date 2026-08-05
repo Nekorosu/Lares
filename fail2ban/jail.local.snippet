@@ -1,9 +1,9 @@
 # Snippet for /etc/fail2ban/jail.local
-[homeshare]
+[lares]
 enabled  = true
 port     = http,https
-filter   = homeshare
-logpath  = /var/log/homeshare/security.log
+filter   = lares
+logpath  = /var/log/lares/security.log
 maxretry = 5
 findtime = 900
 bantime  = 3600
