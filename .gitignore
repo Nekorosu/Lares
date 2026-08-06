@@ -1,8 +1,4 @@
-```
-# Dependencies
-go.mod
-go.sum
-
+```go
 # Compiled and build artifacts
 *.o
 *.obj
@@ -12,9 +8,9 @@ go.sum
 *.exe
 *.out
 
-# Go-specific build artifacts
-bin/
-pkg/
+# Dependencies
+vendor/
+Godeps/
 
 # Logs and temp files
 *.log
@@ -24,7 +20,7 @@ pkg/
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
 # Editors
 .vscode/
@@ -32,17 +28,13 @@ pkg/
 *.swp
 *.swo
 
-# OS generated files
-.DS_Store
-Thumbs.db
-
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Build directories
-build/
-dist/
-target/
+# Build artifacts
+bin/
+pkg/
+*.test
 ```
