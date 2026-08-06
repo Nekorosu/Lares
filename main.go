@@ -212,6 +212,25 @@ func seedInitialData(database *sql.DB) {
 	}
 }
 
+func findDistDir() string {
+	candidates := []string{
+		"dist",
+		"./dist",
+		"../dist",
+		"/srv/media/tmp/Lares/dist",
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(exeDir, "dist"))
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(filepath.Join(c, "index.html")); err == nil && !info.IsDir() {
+			return c
+		}
+	}
+	return "dist"
+}
+
 func main() {
 	configPath := flag.String("config", "/etc/lares/config.yaml", "Path to config file")
 	flag.Parse()
@@ -268,11 +287,14 @@ func main() {
 	// 5. Mux & API Handlers
 	mux := http.NewServeMux()
 
+	distDir := findDistDir()
+	log.Printf("[STATIC] Using frontend build directory: %s", distDir)
+
 	// Serve Static Files
 	staticFS := http.FileServer(http.Dir("web/static"))
 	mux.Handle("/static/", http.StripPrefix("/static/", staticFS))
 
-	distAssetsFS := http.FileServer(http.Dir("dist/assets"))
+	distAssetsFS := http.FileServer(http.Dir(filepath.Join(distDir, "assets")))
 	mux.Handle("/assets/", http.StripPrefix("/assets/", distAssetsFS))
 
 	// Healthcheck
@@ -953,13 +975,13 @@ func main() {
 		}
 
 		cleanedPath := filepath.Clean(r.URL.Path)
-		distFilePath := filepath.Join("dist", cleanedPath)
+		distFilePath := filepath.Join(distDir, cleanedPath)
 		if info, err := os.Stat(distFilePath); err == nil && !info.IsDir() {
 			http.ServeFile(w, r, distFilePath)
 			return
 		}
 
-		distIndexPath := filepath.Join("dist", "index.html")
+		distIndexPath := filepath.Join(distDir, "index.html")
 		if _, err := os.Stat(distIndexPath); err == nil {
 			http.ServeFile(w, r, distIndexPath)
 			return
