@@ -1,41 +1,4 @@
-# Node / Web artifacts
-node_modules/
-build/
-dist/
-coverage/
-
-# Go build artifacts
-*.o
-*.a
-*.so
-*.dylib
-*.dll
-*.exe
-
-# Go cache directories
-go/pkg/mod/
-go/build/
-
+```
 # Dependencies
-vendor/
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
-!.env.example
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
+go.sum
+```
