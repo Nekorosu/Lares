@@ -1,40 +1,4 @@
-```go
+```
 # Compiled and build artifacts
-*.o
-*.obj
-*.a
-*.so
-*.dll
-*.exe
-*.out
-
-# Dependencies
-vendor/
-Godeps/
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Build artifacts
-bin/
-pkg/
-*.test
+lares_test
 ```

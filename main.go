@@ -1138,7 +1138,8 @@ func main() {
 	mux.HandleFunc("/api/admin/invites", func(w http.ResponseWriter, r *http.Request) {
 		admin, errAdmin := authenticateAdmin(database, r)
 		if errAdmin != nil {
-			// Allow reading or creating invites in local/demo mode if person or admin exists
+			writeError(w, http.StatusForbidden, "Доступ запрещён: требуется авторизация администратора")
+			return
 		}
 
 		if r.Method == http.MethodGet {
@@ -1230,6 +1231,12 @@ func main() {
 
 	// POST /api/admin/quarantine/{id}/approve
 	mux.HandleFunc("/api/admin/quarantine/", func(w http.ResponseWriter, r *http.Request) {
+		_, errAdmin := authenticateAdmin(database, r)
+		if errAdmin != nil {
+			writeError(w, http.StatusForbidden, "Доступ запрещён: требуется авторизация администратора")
+			return
+		}
+
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Метод не поддерживается")
 			return
@@ -1249,12 +1256,23 @@ func main() {
 		}
 
 		clientIP := getClientIP(r)
-		auditLogger.Log("admin", 1, "quarantine_approved", "file", fileID, auth.HashIP(clientIP, "lares_salt"), "Снят карантин с файла")
+		admin, _ := authenticateAdmin(database, r)
+		adminID := int64(1)
+		if admin != nil {
+			adminID = admin.ID
+		}
+		auditLogger.Log("admin", adminID, "quarantine_approved", "file", fileID, auth.HashIP(clientIP, "lares_salt"), "Снят карантин с файла")
 		writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Карантин успешно снят", "file_id": fileID})
 	})
 
 	// GET/DELETE /api/admin/sessions
 	mux.HandleFunc("/api/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
+		_, errAdmin := authenticateAdmin(database, r)
+		if errAdmin != nil {
+			writeError(w, http.StatusForbidden, "Доступ запрещён: требуется авторизация администратора")
+			return
+		}
+
 		if r.Method == http.MethodGet {
 			rows, err := database.Query(`
 				SELECT s.id, s.person_id, s.device_name, s.client_ip_hash, s.created_at, s.last_seen_at, s.idle_expires_at, s.revoked, COALESCE(p.label, 'Неизвестно')
@@ -1295,6 +1313,12 @@ func main() {
 
 	// DELETE /api/admin/sessions/{id}
 	mux.HandleFunc("/api/admin/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		_, errAdmin := authenticateAdmin(database, r)
+		if errAdmin != nil {
+			writeError(w, http.StatusForbidden, "Доступ запрещён: требуется авторизация администратора")
+			return
+		}
+
 		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Метод не поддерживается")
 			return
