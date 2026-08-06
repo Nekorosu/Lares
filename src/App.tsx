@@ -958,6 +958,50 @@ sudo systemctl restart lares.service
 sudo systemctl status lares.service`}</pre>
               </div>
             </div>
+
+            {/* Step 3: CLI Administration */}
+            <div className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm space-y-4">
+              <div className="flex items-center gap-3 border-b border-[#f0f0e0] pb-3">
+                <div className="w-8 h-8 rounded-full bg-[#5A5A40] text-white font-bold flex items-center justify-center text-sm">
+                  3
+                </div>
+                <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Управление администраторами через CLI</h3>
+              </div>
+              <p className="text-sm text-[#475569]">
+                Используйте CLI подкоманды <code className="bg-[#f0f0e0] px-1.5 py-0.5 rounded text-[#1a1a15]">homeshare admin</code> для управления аккаунтами администраторов, сброса 2FA и снятия блокировок.
+              </p>
+
+              <div className="bg-[#1e293b] text-[#f8fafc] p-4 rounded-2xl font-mono text-xs relative overflow-x-auto">
+                <button 
+                  onClick={() => copyToClipboard(`# 1. Интерактивное создание администратора (с генерацией TOTP QR-кода)
+./homeshare admin create
+
+# 2. Удаление администратора из БД
+./homeshare admin delete --username newadmin
+
+# 3. Сброс TOTP секрета администратора и генерация нового QR-кода
+./homeshare admin reset-totp --username newadmin
+
+# 4. Снятие rate limit блокировок с администратора
+./homeshare admin unlock --username newadmin`, 'step3')}
+                  className="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-1 text-[11px]"
+                >
+                  {copiedSection === 'step3' ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  Копировать
+                </button>
+                <pre>{`# 1. Интерактивное создание администратора (с валидацией пароля и TOTP QR)
+./homeshare admin create
+
+# 2. Удаление администратора из БД
+./homeshare admin delete --username admin_name
+
+# 3. Сброс TOTP секрета и генерация нового QR-кода
+./homeshare admin reset-totp --username admin_name
+
+# 4. Снятие rate limit блокировок с администратора
+./homeshare admin unlock --username admin_name`}</pre>
+              </div>
+            </div>
           </div>
         )}
 

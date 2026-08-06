@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -231,6 +232,214 @@ func findDistDir() string {
 	return "dist"
 }
 
+func handleAdminCreate(database *sql.DB, args []string) {
+	fs := flag.NewFlagSet("admin create", flag.ExitOnError)
+	usernameFlag := fs.String("username", "", "Имя пользователя администратора")
+	passwordFlag := fs.String("password", "", "Пароль администратора")
+	fs.Parse(args)
+
+	username := strings.TrimSpace(*usernameFlag)
+	password := strings.TrimSpace(*passwordFlag)
+	reader := bufio.NewReader(os.Stdin)
+
+	if username == "" {
+		for {
+			fmt.Print("Введите имя пользователя администратора: ")
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				log.Fatalf("Ошибка чтения имени пользователя: %v", err)
+			}
+			username = strings.TrimSpace(input)
+			if username != "" {
+				break
+			}
+			fmt.Println("Имя пользователя не может быть пустым.")
+		}
+	}
+
+	for {
+		if password == "" {
+			fmt.Print("Введите пароль администратора: ")
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				log.Fatalf("Ошибка чтения пароля: %v", err)
+			}
+			password = strings.TrimSpace(input)
+		}
+
+		err := auth.ValidatePassword(username, password)
+		if err != nil {
+			fmt.Printf("Ошибка валидации пароля: %v\n", err)
+			password = ""
+			continue
+		}
+		break
+	}
+
+	var existingID int64
+	err := database.QueryRow("SELECT id FROM admin_users WHERE username = ?", username).Scan(&existingID)
+	if err == nil {
+		fmt.Printf("Ошибка: Администратор с именем '%s' уже существует в системе.\n", username)
+		os.Exit(1)
+	}
+
+	passHash, err := auth.HashPassword(password)
+	if err != nil {
+		log.Fatalf("Ошибка хеширования пароля: %v", err)
+	}
+
+	totpSecret := auth.GenerateTOTPSecret()
+
+	_, err = database.Exec(`
+		INSERT INTO admin_users (username, password_hash, totp_secret, totp_enabled, created_at)
+		VALUES (?, ?, ?, 1, ?)
+	`, username, passHash, totpSecret, time.Now())
+	if err != nil {
+		log.Fatalf("Ошибка создания администратора в БД: %v", err)
+	}
+
+	qrData, err := auth.GenerateTOTPQR(username, totpSecret, "homeshare")
+	if err != nil {
+		log.Printf("Предупреждение: Не удалось сгенерировать QR-код: %v", err)
+	}
+
+	fmt.Println("==================================================")
+	fmt.Printf("Администратор '%s' успешно создан!\n", username)
+	fmt.Printf("TOTP Secret: %s\n", totpSecret)
+	if qrData != "" {
+		fmt.Println("TOTP QR Code (Base64 Data URL):")
+		fmt.Println(qrData)
+	}
+	fmt.Println("==================================================")
+}
+
+func handleAdminDelete(database *sql.DB, args []string) {
+	fs := flag.NewFlagSet("admin delete", flag.ExitOnError)
+	usernameFlag := fs.String("username", "", "Имя пользователя администратора для удаления")
+	fs.Parse(args)
+
+	username := strings.TrimSpace(*usernameFlag)
+	if username == "" {
+		fmt.Println("Ошибка: Флаг --username обязателен для команды delete.")
+		fmt.Println("Использование: homeshare admin delete --username <name>")
+		os.Exit(1)
+	}
+
+	res, err := database.Exec("DELETE FROM admin_users WHERE username = ?", username)
+	if err != nil {
+		log.Fatalf("Ошибка удаления администратора из БД: %v", err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		fmt.Printf("Администратор с именем '%s' не найден в БД.\n", username)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Администратор '%s' успешно удален из БД.\n", username)
+}
+
+func handleAdminResetTOTP(database *sql.DB, args []string) {
+	fs := flag.NewFlagSet("admin reset-totp", flag.ExitOnError)
+	usernameFlag := fs.String("username", "", "Имя пользователя администратора для сброса TOTP")
+	fs.Parse(args)
+
+	username := strings.TrimSpace(*usernameFlag)
+	if username == "" {
+		fmt.Println("Ошибка: Флаг --username обязателен для команды reset-totp.")
+		fmt.Println("Использование: homeshare admin reset-totp --username <name>")
+		os.Exit(1)
+	}
+
+	var adminID int64
+	err := database.QueryRow("SELECT id FROM admin_users WHERE username = ?", username).Scan(&adminID)
+	if err != nil {
+		fmt.Printf("Ошибка: Администратор с именем '%s' не найден в БД.\n", username)
+		os.Exit(1)
+	}
+
+	newSecret := auth.GenerateTOTPSecret()
+
+	_, err = database.Exec("UPDATE admin_users SET totp_secret = ?, totp_enabled = 1 WHERE username = ?", newSecret, username)
+	if err != nil {
+		log.Fatalf("Ошибка обновления TOTP секрета в БД: %v", err)
+	}
+
+	qrData, err := auth.GenerateTOTPQR(username, newSecret, "homeshare")
+	if err != nil {
+		log.Printf("Предупреждение: Не удалось сгенерировать QR-код: %v", err)
+	}
+
+	fmt.Println("==================================================")
+	fmt.Printf("TOTP секрет для администратора '%s' успешно сброшен!\n", username)
+	fmt.Printf("Новый TOTP Secret: %s\n", newSecret)
+	if qrData != "" {
+		fmt.Println("TOTP QR Code (Base64 Data URL):")
+		fmt.Println(qrData)
+	}
+	fmt.Println("==================================================")
+}
+
+func handleAdminUnlock(database *sql.DB, args []string) {
+	fs := flag.NewFlagSet("admin unlock", flag.ExitOnError)
+	usernameFlag := fs.String("username", "", "Имя пользователя администратора для разблокировки")
+	fs.Parse(args)
+
+	username := strings.TrimSpace(*usernameFlag)
+	if username == "" {
+		fmt.Println("Ошибка: Флаг --username обязателен для команды unlock.")
+		fmt.Println("Использование: homeshare admin unlock --username <name>")
+		os.Exit(1)
+	}
+
+	limiter := ratelimit.NewLimiter(database)
+	userKey := fmt.Sprintf("admin_login_user:%s", username)
+	if err := limiter.Unlock(userKey); err != nil {
+		log.Printf("Ошибка при сбросе основного ключа блокировки: %v", err)
+	}
+
+	res, err := database.Exec(`
+		DELETE FROM rate_limit_locks 
+		WHERE key = ? OR key LIKE ? OR key LIKE ?
+	`, userKey, "admin_login_ipuser:"+username+":%", "%:"+username)
+	if err != nil {
+		log.Fatalf("Ошибка разблокировки администратора в БД: %v", err)
+	}
+
+	rows, _ := res.RowsAffected()
+	fmt.Printf("Снято блокировок rate limit для администратора '%s': %d.\n", username, rows)
+}
+
+func runAdminCLI(database *sql.DB, args []string) {
+	if len(args) == 0 {
+		fmt.Println("Использование: homeshare admin <command> [flags]")
+		fmt.Println("Доступные команды:")
+		fmt.Println("  create       Интерактивное создание нового администратора")
+		fmt.Println("  delete       Удаление администратора из БД (--username)")
+		fmt.Println("  reset-totp   Сброс TOTP секрета и генерация нового (--username)")
+		fmt.Println("  unlock       Снятие rate limit блокировок с администратора (--username)")
+		os.Exit(1)
+	}
+
+	subCmd := args[0]
+	subArgs := args[1:]
+
+	switch subCmd {
+	case "create":
+		handleAdminCreate(database, subArgs)
+	case "delete":
+		handleAdminDelete(database, subArgs)
+	case "reset-totp":
+		handleAdminResetTOTP(database, subArgs)
+	case "unlock":
+		handleAdminUnlock(database, subArgs)
+	default:
+		fmt.Printf("Неизвестная подкоманда для admin: %s\n", subCmd)
+		fmt.Println("Допустимые команды: create, delete, reset-totp, unlock")
+		os.Exit(1)
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "/etc/lares/config.yaml", "Path to config file")
 	flag.Parse()
@@ -254,6 +463,13 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer database.Close()
+
+	// Handle admin CLI subcommands
+	cliArgs := flag.Args()
+	if len(cliArgs) > 0 && cliArgs[0] == "admin" {
+		runAdminCLI(database, cliArgs[1:])
+		os.Exit(0)
+	}
 
 	seedInitialData(database)
 
