@@ -15,8 +15,6 @@ coverage/
 # Go cache directories
 go/pkg/mod/
 go/build/
-*.mod
-*.sum
 
 # Dependencies
 vendor/
