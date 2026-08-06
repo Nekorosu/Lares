@@ -1,6 +1,7 @@
 [Unit]
 Description=Lares Self-Hosted File Exchange Service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -8,11 +9,12 @@ User=lares
 Group=lares
 ExecStart=/usr/local/bin/lares -config /etc/lares/config.yaml
 Restart=on-failure
+RestartSec=3s
 WorkingDirectory=/srv/media/fileshare
 
 # Hardening attributes
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=full
 PrivateTmp=true
 ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/lares /etc/lares
 

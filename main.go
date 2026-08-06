@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -71,15 +73,52 @@ func main() {
 	// 5. Mux & Static Web Handling
 	mux := http.NewServeMux()
 
-	// Serve Static Files
-	fs := http.FileServer(http.Dir("web/static"))
-	mux.Handle("/static/", http.StripPrefix("/static/", fs))
+	// Serve Static Files from web/static
+	staticFS := http.FileServer(http.Dir("web/static"))
+	mux.Handle("/static/", http.StripPrefix("/static/", staticFS))
+
+	// Serve Built Assets from dist/assets if dist exists
+	distAssetsFS := http.FileServer(http.Dir("dist/assets"))
+	mux.Handle("/assets/", http.StripPrefix("/assets/", distAssetsFS))
 
 	// Healthcheck
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok","service":"lares"}`))
+	})
+
+	// Root & SPA Fallback Handler
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// API 404 handler
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		// Try serving requested file directly from dist
+		cleanedPath := filepath.Clean(r.URL.Path)
+		distFilePath := filepath.Join("dist", cleanedPath)
+		if info, err := os.Stat(distFilePath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, distFilePath)
+			return
+		}
+
+		// Try serving dist/index.html for SPA routes
+		distIndexPath := filepath.Join("dist", "index.html")
+		if _, err := os.Stat(distIndexPath); err == nil {
+			http.ServeFile(w, r, distIndexPath)
+			return
+		}
+
+		// Fallback to web/static if file exists
+		webFilePath := filepath.Join("web/static", cleanedPath)
+		if info, err := os.Stat(webFilePath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, webFilePath)
+			return
+		}
+
+		http.NotFound(w, r)
 	})
 
 	// Unused variable suppressions for now
