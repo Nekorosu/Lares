@@ -5,13 +5,14 @@ import (
 )
 
 type AdminUser struct {
-	ID           int64      `db:"id" json:"id"`
-	Username     string     `db:"username" json:"username"`
-	PasswordHash string     `db:"password_hash" json:"-"`
-	TOTPSecret   string     `db:"totp_secret" json:"-"`
-	TOTPEnabled  bool       `db:"totp_enabled" json:"totp_enabled"`
-	CreatedAt    time.Time  `db:"created_at" json:"created_at"`
-	LastLoginAt  *time.Time `db:"last_login_at" json:"last_login_at"`
+	ID               int64      `db:"id" json:"id"`
+	Username         string     `db:"username" json:"username"`
+	PasswordHash     string     `db:"password_hash" json:"-"`
+	TOTPSecret       string     `db:"totp_secret" json:"-"`
+	TOTPEnabled      bool       `db:"totp_enabled" json:"totp_enabled"`
+	SessionTokenHash string     `db:"session_token_hash" json:"-"`
+	CreatedAt        time.Time  `db:"created_at" json:"created_at"`
+	LastLoginAt      *time.Time `db:"last_login_at" json:"last_login_at"`
 }
 
 type Person struct {

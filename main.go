@@ -164,10 +164,10 @@ func authenticateAdmin(database *sql.DB, r *http.Request) (*models.AdminUser, er
 	var admin models.AdminUser
 
 	err := database.QueryRow(`
-		SELECT id, username, password_hash, totp_secret, totp_enabled, created_at, last_login_at
-		FROM admin_users WHERE password_hash = ? OR id = ?
-	`, tokenHash, 1).Scan(
-		&admin.ID, &admin.Username, &admin.PasswordHash, &admin.TOTPSecret, &admin.TOTPEnabled, &admin.CreatedAt, &admin.LastLoginAt,
+		SELECT id, username, password_hash, totp_secret, totp_enabled, session_token_hash, created_at, last_login_at
+		FROM admin_users WHERE session_token_hash = ?
+	`, tokenHash).Scan(
+		&admin.ID, &admin.Username, &admin.PasswordHash, &admin.TOTPSecret, &admin.TOTPEnabled, &admin.SessionTokenHash, &admin.CreatedAt, &admin.LastLoginAt,
 	)
 
 	if err != nil {
@@ -178,19 +178,6 @@ func authenticateAdmin(database *sql.DB, r *http.Request) (*models.AdminUser, er
 }
 
 func seedInitialData(database *sql.DB) {
-	// Seed initial Admin if none exists
-	var adminCount int
-	database.QueryRow("SELECT COUNT(*) FROM admin_users").Scan(&adminCount)
-	if adminCount == 0 {
-		passHash, _ := auth.HashPassword("admin12345678")
-		totpSecret := auth.GenerateTOTPSecret()
-		database.Exec(`
-			INSERT INTO admin_users (username, password_hash, totp_secret, totp_enabled, created_at)
-			VALUES (?, ?, ?, 0, ?)
-		`, "admin", passHash, totpSecret, time.Now())
-		log.Println("[SEED] Created initial admin user 'admin' (password: admin12345678)")
-	}
-
 	// Seed initial Person if none exists
 	var personCount int
 	database.QueryRow("SELECT COUNT(*) FROM people").Scan(&personCount)
@@ -669,12 +656,12 @@ func main() {
 		}
 
 		now := time.Now()
-		database.Exec("UPDATE admin_users SET last_login_at = ? WHERE id = ?", now, admin.ID)
+		adminSessionToken, adminSessionTokenHash := auth.GenerateRandomToken()
+		database.Exec("UPDATE admin_users SET last_login_at = ?, session_token_hash = ? WHERE id = ?", now, adminSessionTokenHash, admin.ID)
 
-		adminToken := admin.PasswordHash
 		http.SetCookie(w, &http.Cookie{
 			Name:     "lares_admin_session",
-			Value:    adminToken,
+			Value:    adminSessionToken,
 			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
@@ -684,7 +671,7 @@ func main() {
 		auditLogger.Log("admin", admin.ID, "admin_login", "admin_user", fmt.Sprintf("%d", admin.ID), ipHash, "Успешная авторизация администратора")
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"admin_token": adminToken,
+			"admin_token": adminSessionToken,
 			"username":    admin.Username,
 			"message":     "Успешный вход",
 		})

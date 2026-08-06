@@ -33,6 +33,7 @@ func migrateSchema(db *sql.DB) error {
 		password_hash TEXT NOT NULL,
 		totp_secret TEXT NOT NULL,
 		totp_enabled INTEGER NOT NULL DEFAULT 1,
+		session_token_hash TEXT,
 		created_at DATETIME NOT NULL,
 		last_login_at DATETIME
 	);

@@ -223,21 +223,33 @@ func (m *Manager) AppendChunk(uploadID string, secret string, offset int64, read
 func (m *Manager) FinalizeUpload(uploadID string, secret string, customSuspicious []string) (*models.FileRecord, error) {
 	upload, err := m.GetUpload(uploadID)
 	if err != nil {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: не удалось найти загрузку ID=%s: %v", uploadID, err)
 		return nil, err
 	}
 
 	if auth.HashString(secret) != upload.UploadSecretHash {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: неверный секретный ключ для загрузки ID=%s", uploadID)
 		return nil, errors.New("неверный секретный ключ загрузки")
+	}
+
+	// Verify person_id exists and is valid
+	var personExists bool
+	err = m.db.QueryRow("SELECT EXISTS(SELECT 1 FROM people WHERE id = ?)", upload.PersonID).Scan(&personExists)
+	if err != nil || !personExists {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: пользователь person_id=%d не существует для загрузки ID=%s", upload.PersonID, uploadID)
+		return nil, fmt.Errorf("пользователь (person_id=%d) не найден", upload.PersonID)
 	}
 
 	partialPath := m.storage.GetPartialPath(uploadID)
 	info, err := os.Stat(partialPath)
 	if err != nil {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: частичный файл не найден %s: %v", partialPath, err)
 		return nil, fmt.Errorf("частичный файл не найден: %w", err)
 	}
 
 	actualSize := info.Size()
 	if actualSize == 0 {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: попытка завершить пустую загрузку ID=%s", uploadID)
 		return nil, errors.New("нельзя завершить пустую загрузку")
 	}
 
@@ -248,14 +260,10 @@ func (m *Manager) FinalizeUpload(uploadID string, secret string, customSuspiciou
 
 	relStoredPath, err := m.storage.GenerateStoredPath(fileID)
 	if err != nil {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: ошибка генерации пути хранения: %v", err)
 		return nil, err
 	}
 	finalFullPath := m.storage.GetFullPath(relStoredPath)
-
-	// Atomic rename from .part to final storage path
-	if err := os.Rename(partialPath, finalFullPath); err != nil {
-		return nil, fmt.Errorf("ошибка атомарного переименования файла: %w", err)
-	}
 
 	// Check suspicious / quarantine
 	isSuspicious, reason := m.storage.IsSuspicious(upload.OriginalName, customSuspicious)
@@ -287,8 +295,10 @@ func (m *Manager) FinalizeUpload(uploadID string, secret string, customSuspiciou
 		ClientIPHash: upload.ClientIPHash,
 	}
 
+	// Create DB record BEFORE atomic rename
 	tx, err := m.db.Begin()
 	if err != nil {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: ошибка открытия транзакции БД: %v", err)
 		return nil, err
 	}
 	defer tx.Rollback()
@@ -299,22 +309,34 @@ func (m *Manager) FinalizeUpload(uploadID string, secret string, customSuspiciou
 	`, fileRecord.ID, fileRecord.PersonID, fileRecord.OriginalName, fileRecord.StoredPath, fileRecord.Size, fileRecord.ContentType, fileRecord.Status, fileRecord.Flagged, fileRecord.FlagReason, fileRecord.Protected, fileRecord.KeepForever, fileRecord.ExpiresAt, fileRecord.CreatedAt, fileRecord.ClientIPHash)
 
 	if err != nil {
-		return nil, err
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: ошибка создания записи в таблице files (person_id=%d): %v", fileRecord.PersonID, err)
+		return nil, fmt.Errorf("ошибка сохранения файла в БД: %w", err)
 	}
 
 	now := time.Now()
 	_, err = tx.Exec("UPDATE uploads SET status = ?, completed_at = ?, received_bytes = ? WHERE id = ?",
 		models.UploadStatusCompleted, now, actualSize, uploadID)
 	if err != nil {
-		return nil, err
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: ошибка обновления статуса uploads: %v", err)
+		return nil, fmt.Errorf("ошибка обновления статуса загрузки: %w", err)
+	}
+
+	// Atomic rename from .part to final storage path
+	if err := os.Rename(partialPath, finalFullPath); err != nil {
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: ошибка атомарного переименования (%s -> %s): %v", partialPath, finalFullPath, err)
+		return nil, fmt.Errorf("ошибка атомарного переименования файла: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		// If DB commit fails, try to rollback physical file rename if possible
+		os.Rename(finalFullPath, partialPath)
+		log.Printf("[UPLOAD ERROR] FinalizeUpload: ошибка фиксации (commit) транзакции: %v", err)
+		return nil, fmt.Errorf("ошибка фиксации транзакции в БД: %w", err)
 	}
 
 	// Track completed traffic
 	m.traffic.AddUploadCompleted(upload.PersonID, actualSize)
+	log.Printf("[UPLOAD SUCCESS] Файл '%s' (ID=%s, Size=%d bytes, PersonID=%d) успешно загружен и зарегистрирован в БД", fileRecord.OriginalName, fileRecord.ID, fileRecord.Size, fileRecord.PersonID)
 
 	return fileRecord, nil
 }

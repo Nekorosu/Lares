@@ -1,8 +1,43 @@
+# Node / Web artifacts
 node_modules/
 build/
 dist/
 coverage/
-.DS_Store
+
+# Go build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Go cache directories
+go/pkg/mod/
+go/build/
+*.mod
+*.sum
+
+# Dependencies
+vendor/
+
+# Logs and temp files
 *.log
-.env*
+*.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
 !.env.example
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
