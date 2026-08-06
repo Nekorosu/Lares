@@ -180,6 +180,28 @@ async function startServer() {
 
   // --- API Routes ---
 
+  // Auth Login Endpoint
+  app.post('/api/auth/login', (req, res) => {
+    const { password } = req.body;
+    // Default admin credentials check (password: "admin" or "admin123")
+    if (password === 'admin' || password === 'admin123' || password === '123456') {
+      res.json({
+        role: 'admin',
+        username: 'Администратор',
+        token: 'admin-session-token-' + crypto.randomBytes(8).toString('hex')
+      });
+    } else {
+      res.status(401).json({ error: 'Неверный пароль администратора. Для тестового входа используйте: admin' });
+    }
+  });
+
+  // Admin Verification Helper
+  const isAdmin = (req: express.Request): boolean => {
+    const roleHeader = req.headers['x-user-role'];
+    const authHeader = req.headers['authorization'];
+    return roleHeader === 'admin' || (typeof authHeader === 'string' && authHeader.includes('admin'));
+  };
+
   // Healthcheck
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', service: 'lares', time: new Date().toISOString() });
@@ -311,6 +333,8 @@ async function startServer() {
       actualSize = fs.statSync(finalPath).size;
     }
 
+    const userLabel = (req.headers['x-uploader-label'] as string) || (isAdmin(req) ? 'Администратор' : 'Пользователь Web');
+
     const suspicious = isSuspiciousExtension(reservation.original_name);
     const fileRecord: FileRecord = {
       id: fileId,
@@ -323,7 +347,7 @@ async function startServer() {
       flag_reason: suspicious ? 'Карантин: обнаружено исполняемое расширение файла' : undefined,
       created_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 86400000 * (reservation.expiry_days || 14)).toISOString(),
-      uploader_label: 'Пользователь Web',
+      uploader_label: userLabel,
     };
 
     state.files.unshift(fileRecord);
@@ -403,6 +427,18 @@ async function startServer() {
       return;
     }
 
+    const targetFile = state.files[index];
+    const userRole = (req.headers['x-user-role'] as string) || 'user';
+    const userLabel = (req.headers['x-uploader-label'] as string) || 'Пользователь Web';
+
+    // Users can only delete their own uploaded files. Admins can delete any file.
+    if (userRole !== 'admin') {
+      if (targetFile.uploader_label === 'Администратор' || (targetFile.uploader_label && targetFile.uploader_label !== userLabel && targetFile.uploader_label !== 'Пользователь Web')) {
+        res.status(403).json({ error: 'Пользователям запрещено удалять файлы администратора или других пользователей. Обычный пользователь может удалять только свои файлы.' });
+        return;
+      }
+    }
+
     const [deleted] = state.files.splice(index, 1);
     const filePath = path.join(UPLOADS_DIR, deleted.stored_path);
     if (fs.existsSync(filePath)) {
@@ -435,10 +471,18 @@ async function startServer() {
 
   // Admin Invites API
   app.get('/api/admin/invites', (req, res) => {
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: 'Доступ запрещен. Управление инвайтами доступно только администратору.' });
+      return;
+    }
     res.json(state.invites);
   });
 
   app.post('/api/admin/invites', (req, res) => {
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: 'Доступ запрещен. Создание инвайтов доступно только администратору.' });
+      return;
+    }
     const { max_activations, expiry_days } = req.body;
     const rawCode = `LARE-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 
@@ -466,6 +510,10 @@ async function startServer() {
 
   // Admin Quarantine Approve
   app.post('/api/admin/quarantine/:id/approve', (req, res) => {
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: 'Доступ запрещен. Одобрение карантина доступно только администратору.' });
+      return;
+    }
     const fileId = req.params.id;
     const file = state.files.find((f) => f.id === fileId);
 
@@ -483,6 +531,10 @@ async function startServer() {
 
   // Sessions API
   app.get('/api/admin/sessions', (req, res) => {
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: 'Доступ запрещен. Просмотр сессий доступен только администратору.' });
+      return;
+    }
     res.json([
       {
         id: 1,
@@ -510,6 +562,10 @@ async function startServer() {
   });
 
   app.delete('/api/admin/sessions/:id', (req, res) => {
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: 'Доступ запрещен. Отзыв сессий доступен только администратору.' });
+      return;
+    }
     res.json({ message: 'Сессия устройства отозвана', session_id: req.params.id });
   });
 
@@ -527,6 +583,8 @@ async function startServer() {
     writeStream.on('finish', () => {
       const stats = fs.statSync(finalPath);
       const suspicious = isSuspiciousExtension(filename);
+      const userLabel = (req.headers['x-uploader-label'] as string) || (isAdmin(req) ? 'Администратор' : 'Пользователь Web');
+
       const fileRecord: FileRecord = {
         id: fileId,
         original_name: filename,
@@ -538,7 +596,7 @@ async function startServer() {
         flag_reason: suspicious ? 'Карантин: обнаружено исполняемое расширение файла' : undefined,
         created_at: new Date().toISOString(),
         expires_at: new Date(Date.now() + 86400000 * 14).toISOString(),
-        uploader_label: 'Пользователь Web',
+        uploader_label: userLabel,
       };
 
       state.files.unshift(fileRecord);

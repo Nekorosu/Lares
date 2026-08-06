@@ -88,6 +88,17 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'guide' | 'config' | 'architecture'>('dashboard');
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
 
+  // Role & Authentication State
+  const [userRole, setUserRole] = useState<'user' | 'admin'>(() => {
+    return (localStorage.getItem('lares_user_role') as 'user' | 'admin') || 'user';
+  });
+  const [adminToken, setAdminToken] = useState<string | null>(() => {
+    return localStorage.getItem('lares_admin_token') || null;
+  });
+  const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
+  const [loginPasswordInput, setLoginPasswordInput] = useState<string>('admin');
+  const [loginErrorMsg, setLoginErrorMsg] = useState<string | null>(null);
+
   // Live Data State
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [files, setFiles] = useState<FileRecord[]>([]);
@@ -127,15 +138,29 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch stats, files, invites, and sessions from API
+  // Build role headers
+  const getAuthHeaders = (customHeaders?: Record<string, string>) => {
+    const headers: Record<string, string> = {
+      'x-user-role': userRole,
+      'x-uploader-label': userRole === 'admin' ? 'Администратор' : 'Пользователь Web',
+      ...customHeaders,
+    };
+    if (adminToken) {
+      headers['authorization'] = `Bearer ${adminToken}`;
+    }
+    return headers;
+  };
+
+  // Fetch stats, files, invites, and sessions with RBAC headers
   const refreshData = async () => {
     setLoading(true);
+    const reqHeaders = getAuthHeaders();
     try {
       const [resStats, resFiles, resInvites, resSessions] = await Promise.all([
-        fetch('/api/stats'),
-        fetch('/api/files'),
-        fetch('/api/admin/invites'),
-        fetch('/api/admin/sessions')
+        fetch('/api/stats', { headers: reqHeaders }),
+        fetch('/api/files', { headers: reqHeaders }),
+        fetch('/api/admin/invites', { headers: reqHeaders }),
+        fetch('/api/admin/sessions', { headers: reqHeaders })
       ]);
 
       if (resStats.ok) setStats(await resStats.json());
@@ -143,13 +168,53 @@ export default function App() {
         const fetchedFiles = await resFiles.json();
         setFiles(fetchedFiles);
       }
-      if (resInvites.ok) setInvites(await resInvites.json());
-      if (resSessions.ok) setSessions(await resSessions.json());
+      if (resInvites.ok) setInvites(await resInvites.json()); else setInvites([]);
+      if (resSessions.ok) setSessions(await resSessions.json()); else setSessions([]);
     } catch (err) {
       console.error('Failed to fetch live API data:', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Admin login handler
+  const handleAdminLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoginErrorMsg(null);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: loginPasswordInput })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUserRole('admin');
+        setAdminToken(data.token);
+        localStorage.setItem('lares_user_role', 'admin');
+        localStorage.setItem('lares_admin_token', data.token);
+        setShowLoginModal(false);
+        setLoginPasswordInput('');
+        // Re-fetch data with new role
+        setTimeout(() => refreshData(), 100);
+      } else {
+        setLoginErrorMsg(data.error || 'Неверный пароль администратора');
+      }
+    } catch (err) {
+      setLoginErrorMsg('Ошибка соединения с сервером');
+    }
+  };
+
+  // Switch back to standard user role
+  const handleLogoutToUser = () => {
+    setUserRole('user');
+    setAdminToken(null);
+    localStorage.setItem('lares_user_role', 'user');
+    localStorage.removeItem('lares_admin_token');
+    if (activeTab === 'config') {
+      setActiveTab('dashboard');
+    }
+    setTimeout(() => refreshData(), 100);
   };
 
   useEffect(() => {
@@ -222,7 +287,7 @@ export default function App() {
       try {
         const resReserve = await fetch('/api/files/upload/reserve', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             filename: file.name,
             declared_size: file.size,
@@ -245,6 +310,7 @@ export default function App() {
             const slice = file.slice(offset, offset + chunkSize);
             const resChunk = await fetch(`/api/files/upload/chunk?upload_id=${upload_id}&secret=${upload_secret}&offset=${offset}`, {
               method: 'POST',
+              headers: getAuthHeaders(),
               body: slice
             });
 
@@ -262,7 +328,7 @@ export default function App() {
 
           const resComplete = await fetch('/api/files/upload/complete', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ upload_id, secret: upload_secret })
           });
 
@@ -285,9 +351,9 @@ export default function App() {
 
         const resDirect = await fetch('/api/files/upload/direct', {
           method: 'POST',
-          headers: {
+          headers: getAuthHeaders({
             'x-file-name': encodeURIComponent(file.name)
-          },
+          }),
           body: formData
         });
 
@@ -352,12 +418,21 @@ export default function App() {
   };
 
   // Delete file handler
-  const handleDeleteFile = async (fileId: string) => {
-    if (!confirm('Вы уверены, что хотите удалить этот файл?')) return;
+  const handleDeleteFile = async (file: FileRecord) => {
+    if (userRole !== 'admin' && file.uploader_label === 'Администратор') {
+      alert('Ошибка доступа: Обычному пользователю запрещено удалять файлы Администратора! Чтобы удалить этот файл, войдите как Администратор.');
+      setShowLoginModal(true);
+      return;
+    }
+
+    if (!confirm(`Вы уверены, что хотите удалить файл "${file.original_name}"?`)) return;
     try {
-      const res = await fetch(`/api/files/delete/${fileId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/files/delete/${file.id}`, { 
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
-        setFiles(prev => prev.filter(f => f.id !== fileId));
+        setFiles(prev => prev.filter(f => f.id !== file.id));
         refreshData();
       } else {
         const data = await res.json();
@@ -370,13 +445,23 @@ export default function App() {
 
   // Approve quarantine handler
   const handleApproveQuarantine = async (fileId: string) => {
+    if (userRole !== 'admin') {
+      alert('Ошибка доступа: Одобрение и вывод файла из карантина доступно только Администратору.');
+      setShowLoginModal(true);
+      return;
+    }
+
     try {
-      const res = await fetch(`/api/admin/quarantine/${fileId}/approve`, { method: 'POST' });
+      const res = await fetch(`/api/admin/quarantine/${fileId}/approve`, { 
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'ready', flagged: false, flag_reason: undefined } : f));
         refreshData();
       } else {
-        alert('Не удалось снять карантин с файла');
+        const data = await res.json();
+        alert(data.error || 'Не удалось снять карантин с файла');
       }
     } catch (err) {
       alert('Ошибка соединения с сервером');
@@ -389,7 +474,7 @@ export default function App() {
     try {
       const res = await fetch('/api/files/download/zip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ file_ids: selectedFileIds })
       });
 
@@ -412,10 +497,16 @@ export default function App() {
 
   // Create Invite Code handler
   const handleCreateInvite = async () => {
+    if (userRole !== 'admin') {
+      alert('Ошибка доступа: Создание инвайт-кодов доступно только Администратору.');
+      setShowLoginModal(true);
+      return;
+    }
+
     try {
       const res = await fetch('/api/admin/invites', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ max_activations: 5, expiry_days: 30 })
       });
       const data = await res.json();
@@ -436,7 +527,7 @@ export default function App() {
     try {
       const res = await fetch('/api/auth/invite/activate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ code: activationCodeInput.trim(), device_name: 'Рабочий ПК' })
       });
       const data = await res.json();
@@ -454,12 +545,24 @@ export default function App() {
 
   // Revoke device session handler
   const handleRevokeSession = async (sessId: number) => {
+    if (userRole !== 'admin') {
+      alert('Ошибка доступа: Отзыв сессий устройств доступен только Администратору.');
+      setShowLoginModal(true);
+      return;
+    }
+
     if (!confirm('Отозвать сессию этого устройства?')) return;
     try {
-      const res = await fetch(`/api/admin/sessions/${sessId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/admin/sessions/${sessId}`, { 
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         setSessions(prev => prev.map(s => s.id === sessId ? { ...s, revoked: true } : s));
         refreshData();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Ошибка отзыва сессии');
       }
     } catch (err) {
       alert('Ошибка при отзыве сессии');
@@ -534,45 +637,76 @@ zip_limits:
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <nav className="flex items-center gap-2 mt-3 sm:mt-0 bg-[#f0f0e0] p-1.5 rounded-full">
-          <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'dashboard' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            Дашборд & Файлы
-          </button>
-          <button 
-            onClick={() => setActiveTab('guide')}
-            className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'guide' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            Инструкция запуска
-          </button>
-          <button 
-            onClick={() => setActiveTab('config')}
-            className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'config' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            Конфигуратор
-          </button>
-          <button 
-            onClick={() => setActiveTab('architecture')}
-            className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'architecture' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
-            }`}
-          >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            Безопасность
-          </button>
-        </nav>
+        {/* Tab Navigation & Role Switcher */}
+        <div className="flex flex-wrap items-center gap-3 mt-3 sm:mt-0">
+          <nav className="flex items-center gap-2 bg-[#f0f0e0] p-1.5 rounded-full">
+            <button 
+              onClick={() => setActiveTab('dashboard')}
+              className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'dashboard' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              Дашборд & Файлы
+            </button>
+            <button 
+              onClick={() => setActiveTab('guide')}
+              className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'guide' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
+              }`}
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              Инструкция запуска
+            </button>
+            <button 
+              onClick={() => setActiveTab('config')}
+              className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'config' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Конфигуратор
+            </button>
+            <button 
+              onClick={() => setActiveTab('architecture')}
+              className={`px-4 py-2 rounded-full text-xs font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'architecture' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40] hover:bg-[#e2e2d5]'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Безопасность
+            </button>
+          </nav>
+
+          {/* Role Status Badge & Auth Toggle */}
+          <div className="flex items-center gap-2">
+            {userRole === 'admin' ? (
+              <div className="flex items-center gap-2 bg-amber-50 border border-amber-300 px-3 py-1.5 rounded-full text-xs font-semibold text-amber-900 shadow-xs">
+                <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>Роль: <strong>Администратор</strong></span>
+                <button 
+                  onClick={handleLogoutToUser}
+                  className="ml-1 text-xs text-amber-800 hover:text-amber-950 underline cursor-pointer"
+                  title="Выйти из прав администратора"
+                >
+                  Выйти
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-[#f0f0e0] border border-[#e2e2d5] px-3 py-1.5 rounded-full text-xs font-medium text-[#5A5A40]">
+                <Users className="w-4 h-4 text-[#8c8c7a] shrink-0" />
+                <span>Роль: <strong>Пользователь</strong></span>
+                <button 
+                  onClick={() => { setLoginErrorMsg(null); setShowLoginModal(true); }}
+                  className="ml-1 px-2.5 py-1 rounded-full bg-[#5A5A40] text-white text-[11px] font-semibold hover:bg-[#484833] transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                >
+                  <Lock className="w-3 h-3" />
+                  Войти как Админ
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </header>
 
       {/* Main Container */}
@@ -1007,13 +1141,39 @@ sudo systemctl status lares.service`}</pre>
 
         {/* TAB 3: CONFIG BUILDER */}
         {activeTab === 'config' && (
-          <div className="space-y-6">
-            <div>
-              <h2 className="font-serif text-3xl text-[#1a1a15]">Генератор конфигурации config.yaml</h2>
-              <p className="text-sm text-[#8c8c7a] mt-1">
-                Настройте лимиты, сетевой адрес и локальные пути для последующей вставки на сервер.
+          userRole !== 'admin' ? (
+            <div className="bg-white p-8 md:p-12 rounded-3xl border border-[#e2e2d5] shadow-sm text-center max-w-2xl mx-auto space-y-4 my-6">
+              <div className="w-16 h-16 rounded-2xl bg-amber-100 border border-amber-300 text-amber-800 flex items-center justify-center mx-auto shadow-xs">
+                <Lock className="w-8 h-8 text-amber-700" />
+              </div>
+              <h2 className="font-serif text-2xl font-bold text-[#1a1a15]">Доступ к Конфигуратору ограничен</h2>
+              <p className="text-sm text-[#8c8c7a]">
+                Изменение параметров сервера, настройка портов, лимитов хранилища и генерация файла <code className="bg-[#f0f0e0] px-1 py-0.5 rounded text-xs font-mono text-[#5A5A40]">config.yaml</code> доступны только авторизованным <strong>Администраторам</strong>.
               </p>
+              <div className="pt-2 flex justify-center gap-3">
+                <button
+                  onClick={() => setShowLoginModal(true)}
+                  className="px-6 py-2.5 rounded-full bg-[#5A5A40] text-white text-xs font-bold hover:bg-[#484833] transition-colors flex items-center gap-2 shadow-xs cursor-pointer"
+                >
+                  <Lock className="w-4 h-4" />
+                  Войти как Администратор
+                </button>
+                <button
+                  onClick={() => setActiveTab('dashboard')}
+                  className="px-5 py-2.5 rounded-full bg-[#f0f0e0] text-[#5A5A40] text-xs font-semibold hover:bg-[#e2e2d5] transition-colors cursor-pointer"
+                >
+                  Вернуться на дашборд
+                </button>
+              </div>
             </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <h2 className="font-serif text-3xl text-[#1a1a15]">Генератор конфигурации config.yaml</h2>
+                <p className="text-sm text-[#8c8c7a] mt-1">
+                  Настройте лимиты, сетевой адрес и локальные пути для последующей вставки на сервер.
+                </p>
+              </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Controls Form */}
@@ -1097,6 +1257,7 @@ sudo systemctl status lares.service`}</pre>
               </div>
             </div>
           </div>
+          )
         )}
 
         {/* TAB 4: ARCHITECTURE & SECURITY */}
@@ -1509,6 +1670,74 @@ sudo systemctl status lares.service`}</pre>
                 </p>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL 6: ADMIN LOGIN MODAL --- */}
+      {showLoginModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border border-[#e2e2d5] relative animate-in fade-in zoom-in duration-200">
+            <button 
+              onClick={() => setShowLoginModal(false)}
+              className="absolute top-4 right-4 p-2 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 text-amber-900 flex items-center justify-center shrink-0 shadow-xs">
+                <Lock className="w-6 h-6 text-amber-700" />
+              </div>
+              <div>
+                <h3 className="font-serif text-xl font-bold text-[#1a1a15]">Авторизация Администратора</h3>
+                <p className="text-xs text-[#8c8c7a]">Доступ к конфигурации, управлению карантином и отзыву сессий</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
+                  Пароль администратора
+                </label>
+                <input 
+                  type="password"
+                  value={loginPasswordInput}
+                  onChange={(e) => setLoginPasswordInput(e.target.value)}
+                  placeholder="Введите пароль..."
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
+                  autoFocus
+                />
+                <p className="text-[11px] text-[#8c8c7a] mt-1.5 flex items-center gap-1">
+                  <span>Пароль по умолчанию для теста:</span>
+                  <code className="bg-[#f0f0e0] px-1.5 py-0.5 rounded text-xs font-mono font-bold text-[#5A5A40]">admin</code>
+                </p>
+              </div>
+
+              {loginErrorMsg && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{loginErrorMsg}</span>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLoginModal(false)}
+                  className="px-4 py-2 rounded-full bg-[#f0f0e0] text-[#5A5A40] text-xs font-semibold hover:bg-[#e2e2d5] transition-colors cursor-pointer"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 rounded-full bg-[#5A5A40] text-white text-xs font-bold hover:bg-[#484833] transition-colors shadow-xs cursor-pointer flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  Войти как Админ
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
