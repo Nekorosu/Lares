@@ -481,6 +481,78 @@ async function startServer() {
     res.json({ message: 'Файл подтвержден и выведен из карантина', file });
   });
 
+  // Sessions API
+  app.get('/api/admin/sessions', (req, res) => {
+    res.json([
+      {
+        id: 1,
+        person_id: 1,
+        person_label: 'Администратор',
+        device_name: 'Рабочая станция (Primary)',
+        client_ip_hash: 'a8f3...71e9',
+        created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+        last_seen_at: new Date().toISOString(),
+        idle_expires_at: new Date(Date.now() + 86400000 * 14).toISOString(),
+        revoked: false
+      },
+      {
+        id: 2,
+        person_id: 2,
+        person_label: 'Михаил И.',
+        device_name: 'MacBook Pro M2',
+        client_ip_hash: 'b2c1...90da',
+        created_at: new Date(Date.now() - 86400000 * 10).toISOString(),
+        last_seen_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+        idle_expires_at: new Date(Date.now() + 86400000 * 7).toISOString(),
+        revoked: false
+      }
+    ]);
+  });
+
+  app.delete('/api/admin/sessions/:id', (req, res) => {
+    res.json({ message: 'Сессия устройства отозвана', session_id: req.params.id });
+  });
+
+  // Direct File Upload Endpoint
+  app.post('/api/files/upload/direct', (req, res) => {
+    let filename = req.headers['x-file-name'] ? decodeURIComponent(req.headers['x-file-name'] as string) : 'uploaded_file.dat';
+    const fileId = crypto.randomBytes(16).toString('hex');
+    const ext = path.extname(filename);
+    const storedFileName = `${fileId}${ext || '.bin'}`;
+    const finalPath = path.join(UPLOADS_DIR, storedFileName);
+
+    const writeStream = fs.createWriteStream(finalPath);
+    req.pipe(writeStream);
+
+    writeStream.on('finish', () => {
+      const stats = fs.statSync(finalPath);
+      const suspicious = isSuspiciousExtension(filename);
+      const fileRecord: FileRecord = {
+        id: fileId,
+        original_name: filename,
+        stored_path: storedFileName,
+        size: stats.size,
+        content_type: detectContentType(filename),
+        status: suspicious ? 'quarantined' : 'ready',
+        flagged: suspicious,
+        flag_reason: suspicious ? 'Карантин: обнаружено исполняемое расширение файла' : undefined,
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 86400000 * 14).toISOString(),
+        uploader_label: 'Пользователь Web',
+      };
+
+      state.files.unshift(fileRecord);
+      state.stats.total_upload_bytes += stats.size;
+      saveState(state);
+
+      res.json(fileRecord);
+    });
+
+    writeStream.on('error', (err) => {
+      res.status(500).json({ error: 'Ошибка сохранения файла: ' + err.message });
+    });
+  });
+
   // --- Vite Middleware for Dev or Dist Serving for Production ---
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

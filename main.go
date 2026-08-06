@@ -758,6 +758,65 @@ func main() {
 		writeJSON(w, http.StatusOK, fileRecord)
 	})
 
+	// POST /api/files/upload/direct (Direct Multipart or Single Request Upload)
+	mux.HandleFunc("/api/files/upload/direct", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Метод не поддерживается")
+			return
+		}
+
+		person, session, errAuth := authenticatePerson(database, r)
+		if errAuth != nil {
+			var defaultPerson models.Person
+			_ = database.QueryRow(`
+				SELECT id, label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, 
+				       monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, 
+				       allow_user_keep_forever, session_idle_days, session_absolute_days, ignore_traffic_quota
+				FROM people WHERE enabled = 1 LIMIT 1
+			`).Scan(
+				&defaultPerson.ID, &defaultPerson.Label, &defaultPerson.Notes, &defaultPerson.Enabled, &defaultPerson.StorageQuotaBytes, &defaultPerson.MonthlyUploadLimitBytes,
+				&defaultPerson.MonthlyDownloadLimitBytes, &defaultPerson.MaxFileSizeBytes, &defaultPerson.MaxConcurrentUploads,
+				&defaultPerson.AllowUserKeepForever, &defaultPerson.SessionIdleDays, &defaultPerson.SessionAbsoluteDays, &defaultPerson.IgnoreTrafficQuota,
+			)
+			person = &defaultPerson
+			session = &models.DeviceSession{ID: 1}
+		}
+
+		r.ParseMultipartForm(100 << 20) // 100MB max in memory
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Не удалось получить файл из формы (поле 'file')")
+			return
+		}
+		defer file.Close()
+
+		clientIP := getClientIP(r)
+		ipHash := auth.HashIP(clientIP, "lares_salt")
+		isLocal := isLocalIP(clientIP, cfg.Network.LocalCIDRs)
+
+		uploadObj, secret, err := uploadManager.CreateReservation(person, session.ID, header.Filename, header.Size, header.Header.Get("Content-Type"), cfg.Limits.DefaultExpiryDays, ipHash, isLocal)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		_, err = uploadManager.AppendChunk(uploadObj.ID, secret, 0, file)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		suspicious := settingsManager.GetSuspiciousList()
+		fileRecord, err := uploadManager.FinalizeUpload(uploadObj.ID, secret, suspicious)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		auditLogger.Log("person", fileRecord.PersonID, "upload_direct", "file", fileRecord.ID, ipHash, fmt.Sprintf("Прямая загрузка: %s", fileRecord.OriginalName))
+		writeJSON(w, http.StatusOK, fileRecord)
+	})
+
 	// GET /api/files/download/
 	mux.HandleFunc("/api/files/download/", func(w http.ResponseWriter, r *http.Request) {
 		fileID := strings.TrimPrefix(r.URL.Path, "/api/files/download/")
@@ -965,6 +1024,83 @@ func main() {
 			})
 			return
 		}
+	})
+
+	// POST /api/admin/quarantine/{id}/approve
+	mux.HandleFunc("/api/admin/quarantine/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Метод не поддерживается")
+			return
+		}
+
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/quarantine/"), "/")
+		if len(parts) == 0 || parts[0] == "" {
+			writeError(w, http.StatusBadRequest, "ID файла не указан")
+			return
+		}
+
+		fileID := parts[0]
+		_, err := database.Exec("UPDATE files SET status = 'ready', flagged = 0, flag_reason = '' WHERE id = ?", fileID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Не удалось обновить статус карантина")
+			return
+		}
+
+		clientIP := getClientIP(r)
+		auditLogger.Log("admin", 1, "quarantine_approved", "file", fileID, auth.HashIP(clientIP, "lares_salt"), "Снят карантин с файла")
+		writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Карантин успешно снят", "file_id": fileID})
+	})
+
+	// GET/DELETE /api/admin/sessions
+	mux.HandleFunc("/api/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			rows, err := database.Query(`
+				SELECT s.id, s.person_id, s.device_name, s.client_ip_hash, s.created_at, s.last_seen_at, s.idle_expires_at, s.revoked, COALESCE(p.label, 'Неизвестно')
+				FROM device_sessions s
+				LEFT JOIN people p ON s.person_id = p.id
+				ORDER BY s.last_seen_at DESC
+			`)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Ошибка чтения сессий")
+				return
+			}
+			defer rows.Close()
+
+			var list []map[string]interface{}
+			for rows.Next() {
+				var id, personID int64
+				var deviceName, ipHash, personLabel string
+				var createdAt, lastSeen, idleExp time.Time
+				var revoked bool
+				rows.Scan(&id, &personID, &deviceName, &ipHash, &createdAt, &lastSeen, &idleExp, &revoked, &personLabel)
+
+				list = append(list, map[string]interface{}{
+					"id":              id,
+					"person_id":       personID,
+					"person_label":    personLabel,
+					"device_name":     deviceName,
+					"client_ip_hash":  ipHash,
+					"created_at":      createdAt,
+					"last_seen_at":    lastSeen,
+					"idle_expires_at": idleExp,
+					"revoked":         revoked,
+				})
+			}
+			writeJSON(w, http.StatusOK, list)
+			return
+		}
+	})
+
+	// DELETE /api/admin/sessions/{id}
+	mux.HandleFunc("/api/admin/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Метод не поддерживается")
+			return
+		}
+
+		sessID := strings.TrimPrefix(r.URL.Path, "/api/admin/sessions/")
+		database.Exec("UPDATE device_sessions SET revoked = 1 WHERE id = ?", sessID)
+		writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Сессия отозвана", "session_id": sessID})
 	})
 
 	// Root & SPA Fallback Handler

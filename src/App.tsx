@@ -19,7 +19,17 @@ import {
   Plus,
   RefreshCw,
   FileUp,
-  X
+  X,
+  Search,
+  Filter,
+  PieChart,
+  Wifi,
+  Laptop,
+  Check,
+  ShieldAlert,
+  SlidersHorizontal,
+  ChevronRight,
+  Info
 } from 'lucide-react';
 
 interface FileRecord {
@@ -62,6 +72,18 @@ interface InviteCode {
   created_at: string;
 }
 
+interface DeviceSession {
+  id: number;
+  person_id: number;
+  person_label: string;
+  device_name: string;
+  client_ip_hash: string;
+  created_at: string;
+  last_seen_at: string;
+  idle_expires_at: string;
+  revoked: boolean;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'guide' | 'config' | 'architecture'>('dashboard');
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
@@ -70,14 +92,27 @@ export default function App() {
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [invites, setInvites] = useState<InviteCode[]>([]);
+  const [sessions, setSessions] = useState<DeviceSession[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
 
-  // Modals & Forms State
+  // Filtering & Search State
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'ready' | 'quarantined'>('all');
+
+  // Modals State
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
+  const [showStorageModal, setShowStorageModal] = useState<boolean>(false);
+  const [showTrafficModal, setShowTrafficModal] = useState<boolean>(false);
+  const [showSessionsModal, setShowSessionsModal] = useState<boolean>(false);
+
+  // Upload Progress State
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadStatusMsg, setUploadStatusMsg] = useState<string>('');
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+
+  // Invites & Activation State
   const [newInviteResult, setNewInviteResult] = useState<string | null>(null);
   const [activationCodeInput, setActivationCodeInput] = useState<string>('');
   const [activationMsg, setActivationMsg] = useState<{ text: string; error: boolean } | null>(null);
@@ -92,19 +127,24 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch stats and file records from API
+  // Fetch stats, files, invites, and sessions from API
   const refreshData = async () => {
     setLoading(true);
     try {
-      const [resStats, resFiles, resInvites] = await Promise.all([
+      const [resStats, resFiles, resInvites, resSessions] = await Promise.all([
         fetch('/api/stats'),
         fetch('/api/files'),
-        fetch('/api/admin/invites')
+        fetch('/api/admin/invites'),
+        fetch('/api/admin/sessions')
       ]);
 
       if (resStats.ok) setStats(await resStats.json());
-      if (resFiles.ok) setFiles(await resFiles.json());
+      if (resFiles.ok) {
+        const fetchedFiles = await resFiles.json();
+        setFiles(fetchedFiles);
+      }
       if (resInvites.ok) setInvites(await resInvites.json());
+      if (resSessions.ok) setSessions(await resSessions.json());
     } catch (err) {
       console.error('Failed to fetch live API data:', err);
     } finally {
@@ -130,73 +170,103 @@ export default function App() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  // Upload handler
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  // Upload core processor function with resilient fallback
+  const uploadFileProcess = async (file: File) => {
     try {
       setUploadProgress(10);
-      setUploadStatusMsg(`Резервирование загрузки для ${file.name}...`);
+      setUploadStatusMsg(`Подготовка к загрузке: ${file.name}`);
 
-      // 1. Reserve upload
-      const resReserve = await fetch('/api/files/upload/reserve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: file.name,
-          declared_size: file.size,
-          content_type: file.type || 'application/octet-stream',
-          expiry_days: 14
-        })
-      });
+      let uploadSuccess = false;
+      let newRecord: FileRecord | null = null;
 
-      const reserveData = await resReserve.json();
-      if (!resReserve.ok) {
-        throw new Error(reserveData.error || 'Ошибка резервирования');
-      }
-
-      const { upload_id, upload_secret } = reserveData;
-      setUploadProgress(40);
-      setUploadStatusMsg('Передача файла на сервер Lares...');
-
-      // 2. Stream chunk
-      const chunkSize = 2 * 1024 * 1024; // 2MB
-      let offset = 0;
-
-      while (offset < file.size) {
-        const slice = file.slice(offset, offset + chunkSize);
-        const resChunk = await fetch(`/api/files/upload/chunk?upload_id=${upload_id}&secret=${upload_secret}&offset=${offset}`, {
+      // 1. Try chunked upload flow
+      try {
+        const resReserve = await fetch('/api/files/upload/reserve', {
           method: 'POST',
-          body: slice
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: file.name,
+            declared_size: file.size,
+            content_type: file.type || 'application/octet-stream',
+            expiry_days: 14
+          })
         });
 
-        if (!resChunk.ok) {
-          throw new Error('Ошибка при передаче чанка файла');
-        }
+        if (resReserve.ok) {
+          const reserveData = await resReserve.json();
+          const { upload_id, upload_secret } = reserveData;
 
-        offset += slice.size;
-        const pct = Math.min(90, Math.floor((offset / file.size) * 80) + 10);
-        setUploadProgress(pct);
+          setUploadProgress(30);
+          setUploadStatusMsg('Передача данных на сервер Lares...');
+
+          const chunkSize = 2 * 1024 * 1024; // 2MB
+          let offset = 0;
+
+          while (offset < file.size) {
+            const slice = file.slice(offset, offset + chunkSize);
+            const resChunk = await fetch(`/api/files/upload/chunk?upload_id=${upload_id}&secret=${upload_secret}&offset=${offset}`, {
+              method: 'POST',
+              body: slice
+            });
+
+            if (!resChunk.ok) {
+              throw new Error('Chunk send failed');
+            }
+
+            offset += slice.size;
+            const pct = Math.min(85, Math.floor((offset / file.size) * 60) + 25);
+            setUploadProgress(pct);
+          }
+
+          setUploadProgress(90);
+          setUploadStatusMsg('Финализация файла и проверка расширения...');
+
+          const resComplete = await fetch('/api/files/upload/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upload_id, secret: upload_secret })
+          });
+
+          if (resComplete.ok) {
+            newRecord = await resComplete.json();
+            uploadSuccess = true;
+          }
+        }
+      } catch (chunkErr) {
+        console.warn('Chunked upload failed, falling back to direct upload:', chunkErr);
       }
 
-      setUploadProgress(95);
-      setUploadStatusMsg('Завершение загрузки и проверке расширения...');
+      // 2. Direct upload fallback if chunked failed
+      if (!uploadSuccess) {
+        setUploadProgress(50);
+        setUploadStatusMsg('Прямая передача файла...');
 
-      // 3. Complete
-      const resComplete = await fetch('/api/files/upload/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ upload_id, secret: upload_secret })
-      });
+        const formData = new FormData();
+        formData.append('file', file);
 
-      if (!resComplete.ok) {
-        const compData = await resComplete.json();
-        throw new Error(compData.error || 'Ошибка завершения загрузки');
+        const resDirect = await fetch('/api/files/upload/direct', {
+          method: 'POST',
+          headers: {
+            'x-file-name': encodeURIComponent(file.name)
+          },
+          body: formData
+        });
+
+        if (resDirect.ok) {
+          newRecord = await resDirect.json();
+          uploadSuccess = true;
+        } else {
+          const errData = await resDirect.json().catch(() => ({}));
+          throw new Error(errData.error || 'Ошибка прямой загрузки');
+        }
       }
 
       setUploadProgress(100);
       setUploadStatusMsg('Загрузка успешно завершена!');
+
+      if (newRecord) {
+        setFiles(prev => [newRecord!, ...prev.filter(f => f.id !== newRecord!.id)]);
+      }
 
       setTimeout(() => {
         setShowUploadModal(false);
@@ -206,9 +276,39 @@ export default function App() {
       }, 1000);
 
     } catch (err: any) {
-      alert(`Ошибка загрузки: ${err.message}`);
+      alert(`Ошибка загрузки файла: ${err.message}`);
       setUploadProgress(null);
       setUploadStatusMsg('');
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadFileProcess(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      uploadFileProcess(file);
     }
   };
 
@@ -218,6 +318,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/files/delete/${fileId}`, { method: 'DELETE' });
       if (res.ok) {
+        setFiles(prev => prev.filter(f => f.id !== fileId));
         refreshData();
       } else {
         const data = await res.json();
@@ -233,6 +334,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/admin/quarantine/${fileId}/approve`, { method: 'POST' });
       if (res.ok) {
+        setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'ready', flagged: false, flag_reason: undefined } : f));
         refreshData();
       } else {
         alert('Не удалось снять карантин с файла');
@@ -310,6 +412,31 @@ export default function App() {
       setActivationMsg({ text: 'Не удалось связаться с сервером', error: true });
     }
   };
+
+  // Revoke device session handler
+  const handleRevokeSession = async (sessId: number) => {
+    if (!confirm('Отозвать сессию этого устройства?')) return;
+    try {
+      const res = await fetch(`/api/admin/sessions/${sessId}`, { method: 'DELETE' });
+      if (res.ok) {
+        setSessions(prev => prev.map(s => s.id === sessId ? { ...s, revoked: true } : s));
+        refreshData();
+      }
+    } catch (err) {
+      alert('Ошибка при отзыве сессии');
+    }
+  };
+
+  // Filtered files calculation
+  const filteredFiles = files.filter(f => {
+    const matchesSearch = f.original_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (f.uploader_label && f.uploader_label.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesStatus = statusFilter === 'all' || f.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const readyFilesCount = files.filter(f => f.status === 'ready').length;
+  const quarantinedFilesCount = files.filter(f => f.status === 'quarantined').length;
 
   const generatedYaml = `# Lares Configuration File
 listen: "${cfgListen}"
@@ -443,19 +570,25 @@ zip_limits:
               </div>
             </div>
 
-            {/* Metrics Grid */}
+            {/* Metrics Grid — FULLY CLICKABLE METRICS CARDS */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Storage Meter */}
-              <div className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm">
+              {/* Card 1: Storage Meter (CLICKABLE) */}
+              <button 
+                onClick={() => setShowStorageModal(true)}
+                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden"
+              >
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a]">Занято на диске</span>
-                  <HardDrive className="w-4 h-4 text-[#5A5A40]" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a] group-hover:text-[#5A5A40] transition-colors">Занято на диске</span>
+                  <div className="p-1.5 rounded-full bg-[#f0f0e0] group-hover:bg-[#5A5A40] group-hover:text-white transition-colors">
+                    <HardDrive className="w-4 h-4 text-[#5A5A40] group-hover:text-white" />
+                  </div>
                 </div>
                 <div className="text-3xl font-semibold text-[#5A5A40] font-sans">
                   {formatBytes(stats?.storage.used_bytes || 0)}
                 </div>
-                <div className="text-xs text-[#8c8c7a] mt-1">
-                  из {formatBytes(stats?.storage.quota_bytes || 107374182400)} общей квоты
+                <div className="text-xs text-[#8c8c7a] mt-1 flex justify-between items-center">
+                  <span>из {formatBytes(stats?.storage.quota_bytes || 107374182400)} квоты</span>
+                  <span className="text-[11px] font-semibold text-[#5A5A40] underline opacity-0 group-hover:opacity-100 transition-opacity">Подробнее &rarr;</span>
                 </div>
                 <div className="w-full h-2.5 bg-[#e2e2d5] rounded-full overflow-hidden mt-4">
                   <div 
@@ -465,66 +598,114 @@ zip_limits:
                     }}
                   ></div>
                 </div>
-              </div>
+              </button>
 
-              {/* Monthly Traffic */}
-              <div className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm">
+              {/* Card 2: Monthly Traffic (CLICKABLE) */}
+              <button 
+                onClick={() => setShowTrafficModal(true)}
+                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden"
+              >
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a]">Суммарный Трафик</span>
-                  <Activity className="w-4 h-4 text-[#5A5A40]" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a] group-hover:text-[#5A5A40] transition-colors">Суммарный Трафик</span>
+                  <div className="p-1.5 rounded-full bg-[#f0f0e0] group-hover:bg-[#5A5A40] group-hover:text-white transition-colors">
+                    <Activity className="w-4 h-4 text-[#5A5A40] group-hover:text-white" />
+                  </div>
                 </div>
                 <div className="text-3xl font-semibold text-[#5A5A40] font-sans">
                   {formatBytes(stats?.traffic.total_bytes || 0)}
                 </div>
-                <div className="text-xs text-[#8c8c7a] mt-1">
-                  Загрузка: {formatBytes(stats?.traffic.upload_bytes || 0)} | Выгрузка: {formatBytes(stats?.traffic.download_bytes || 0)}
+                <div className="text-xs text-[#8c8c7a] mt-1 flex justify-between items-center">
+                  <span>Загрузка: {formatBytes(stats?.traffic.upload_bytes || 0)} | Выгрузка: {formatBytes(stats?.traffic.download_bytes || 0)}</span>
+                  <span className="text-[11px] font-semibold text-[#5A5A40] underline opacity-0 group-hover:opacity-100 transition-opacity">График &rarr;</span>
                 </div>
                 <div className="w-full h-2.5 bg-[#e2e2d5] rounded-full overflow-hidden mt-4">
-                  <div className="h-full bg-[#5A5A40] rounded-full" style={{ width: '38%' }}></div>
+                  <div className="h-full bg-[#5A5A40] rounded-full" style={{ width: '42%' }}></div>
                 </div>
-              </div>
+              </button>
 
-              {/* Active Sessions */}
-              <div className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm">
+              {/* Card 3: Active Sessions (CLICKABLE) */}
+              <button 
+                onClick={() => setShowSessionsModal(true)}
+                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden"
+              >
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a]">Активные Устройства</span>
-                  <Users className="w-4 h-4 text-[#5A5A40]" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a] group-hover:text-[#5A5A40] transition-colors">Активные Устройства</span>
+                  <div className="p-1.5 rounded-full bg-[#f0f0e0] group-hover:bg-[#5A5A40] group-hover:text-white transition-colors">
+                    <Users className="w-4 h-4 text-[#5A5A40] group-hover:text-white" />
+                  </div>
                 </div>
                 <div className="text-3xl font-semibold text-[#5A5A40] font-sans">
-                  {stats?.active_sessions || 12} подключений
+                  {stats?.active_sessions || sessions.filter(s => !s.revoked).length || 2} подключения
                 </div>
-                <div className="text-xs text-[#8c8c7a] mt-1">Токенизированные сессии с автопродлением</div>
+                <div className="text-xs text-[#8c8c7a] mt-1 flex justify-between items-center">
+                  <span>Сессии устройств с автопродлением</span>
+                  <span className="text-[11px] font-semibold text-[#5A5A40] underline opacity-0 group-hover:opacity-100 transition-opacity">Сессии &rarr;</span>
+                </div>
                 <div className="flex gap-1.5 mt-4">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#5A5A40]"></span>
                   <span className="w-2.5 h-2.5 rounded-full bg-[#5A5A40]"></span>
                   <span className="w-2.5 h-2.5 rounded-full bg-[#5A5A40]"></span>
                   <span className="w-2.5 h-2.5 rounded-full bg-[#d4a373]"></span>
                   <span className="w-2.5 h-2.5 rounded-full bg-[#e2e2d5]"></span>
                 </div>
-              </div>
+              </button>
             </div>
 
             {/* Interactive File Management Section */}
-            <div className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm">
-              <div className="flex flex-wrap justify-between items-center gap-4 mb-4">
+            <div className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm space-y-4">
+              <div className="flex flex-wrap justify-between items-center gap-4">
                 <div>
-                  <h3 className="font-serif text-xl text-[#1a1a15]">Файлы в хранилище ({files.length})</h3>
+                  <h3 className="font-serif text-xl text-[#1a1a15]">Файлы в хранилище ({filteredFiles.length} из {files.length})</h3>
                   <p className="text-xs text-[#8c8c7a]">Безопасное хранение с автоматической изоляцией подозрительных архивов</p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Status Filters */}
+                  <div className="flex items-center bg-[#f0f0e0] p-1 rounded-full text-xs">
+                    <button 
+                      onClick={() => setStatusFilter('all')}
+                      className={`px-3 py-1 rounded-full font-medium transition-colors ${statusFilter === 'all' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40]'}`}
+                    >
+                      Все ({files.length})
+                    </button>
+                    <button 
+                      onClick={() => setStatusFilter('ready')}
+                      className={`px-3 py-1 rounded-full font-medium transition-colors ${statusFilter === 'ready' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40]'}`}
+                    >
+                      Готовые ({readyFilesCount})
+                    </button>
+                    <button 
+                      onClick={() => setStatusFilter('quarantined')}
+                      className={`px-3 py-1 rounded-full font-medium transition-colors ${statusFilter === 'quarantined' ? 'bg-[#5A5A40] text-white shadow-xs' : 'text-[#5A5A40]'}`}
+                    >
+                      Карантин ({quarantinedFilesCount})
+                    </button>
+                  </div>
+
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-[#8c8c7a] absolute left-3 top-2.5" />
+                    <input 
+                      type="text" 
+                      placeholder="Поиск по имени..." 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-8 pr-3 py-1.5 rounded-full bg-[#fcfcf9] border border-[#e2e2d5] text-xs focus:outline-none focus:border-[#5A5A40] w-40 sm:w-56"
+                    />
+                  </div>
+
                   {selectedFileIds.length > 0 && (
                     <button 
                       onClick={handleDownloadZip}
-                      className="px-4 py-2 rounded-full bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors flex items-center gap-2"
+                      className="px-4 py-1.5 rounded-full bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors flex items-center gap-1.5 cursor-pointer"
                     >
                       <Archive className="w-3.5 h-3.5" />
                       Скачать ZIP ({selectedFileIds.length})
                     </button>
                   )}
+
                   <button 
                     onClick={() => setShowUploadModal(true)}
-                    className="px-4 py-2 rounded-full bg-[#f0f0e0] text-[#5A5A40] text-xs font-semibold hover:bg-[#e2e2d5] transition-colors flex items-center gap-1.5"
+                    className="px-4 py-1.5 rounded-full bg-[#f0f0e0] text-[#5A5A40] text-xs font-semibold hover:bg-[#e2e2d5] transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Добавить файл
@@ -540,9 +721,9 @@ zip_limits:
                       <th className="py-3 px-3 w-8">
                         <input 
                           type="checkbox"
-                          checked={selectedFileIds.length === files.length && files.length > 0}
+                          checked={selectedFileIds.length === filteredFiles.length && filteredFiles.length > 0}
                           onChange={(e) => {
-                            if (e.target.checked) setSelectedFileIds(files.map(f => f.id));
+                            if (e.target.checked) setSelectedFileIds(filteredFiles.map(f => f.id));
                             else setSelectedFileIds([]);
                           }}
                           className="rounded border-[#e2e2d5] text-[#5A5A40] focus:ring-0 cursor-pointer"
@@ -556,14 +737,14 @@ zip_limits:
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#f5f5f0] text-sm">
-                    {files.length === 0 ? (
+                    {filteredFiles.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="py-8 text-center text-xs text-[#8c8c7a]">
-                          Хранилище пока пустое. Нажмите «Загрузить файл» выше.
+                          {files.length === 0 ? 'Хранилище пока пустое. Нажмите «Загрузить файл» выше.' : 'Файлы по вашему фильтру не найдены.'}
                         </td>
                       </tr>
                     ) : (
-                      files.map((file) => {
+                      filteredFiles.map((file) => {
                         const isSelected = selectedFileIds.includes(file.id);
                         return (
                           <tr key={file.id} className="hover:bg-[#fcfcf9] transition-colors">
@@ -580,9 +761,12 @@ zip_limits:
                             </td>
                             <td className="py-3.5 px-4 font-medium text-[#1a1a15]">
                               <div className="flex flex-col">
-                                <span>{file.original_name}</span>
+                                <span className="font-semibold text-[#1a1a15]">{file.original_name}</span>
                                 {file.flag_reason && (
-                                  <span className="text-[11px] text-amber-700 mt-0.5">{file.flag_reason}</span>
+                                  <span className="text-[11px] text-amber-700 mt-0.5 flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3 text-amber-600 inline" />
+                                    {file.flag_reason}
+                                  </span>
                                 )}
                               </div>
                             </td>
@@ -590,11 +774,13 @@ zip_limits:
                             <td className="py-3.5 px-4 text-[#1a1a15] text-xs">{file.uploader_label || 'Гость'}</td>
                             <td className="py-3.5 px-4">
                               {file.status === 'ready' ? (
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#5A5A40] text-white">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#5A5A40] text-white">
+                                  <Check className="w-3 h-3" />
                                   Готов
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#d4a373] text-white">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#d4a373] text-white">
+                                  <ShieldAlert className="w-3 h-3" />
                                   Карантин
                                 </span>
                               )}
@@ -604,7 +790,7 @@ zip_limits:
                                 {file.status === 'quarantined' ? (
                                   <button 
                                     onClick={() => handleApproveQuarantine(file.id)}
-                                    className="px-2.5 py-1 rounded-full bg-[#5A5A40] text-white text-xs font-medium hover:bg-[#484833] transition-colors"
+                                    className="px-2.5 py-1 rounded-full bg-[#5A5A40] text-white text-xs font-medium hover:bg-[#484833] transition-colors cursor-pointer"
                                   >
                                     Одобрить
                                   </button>
@@ -613,7 +799,7 @@ zip_limits:
                                     href={`/api/files/download/${file.id}`}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="px-3 py-1 rounded-full bg-[#e2e2d5] text-[#1a1a15] text-xs font-medium hover:bg-[#d1d1c1] transition-colors flex items-center gap-1 inline-flex"
+                                    className="px-3 py-1 rounded-full bg-[#e2e2d5] text-[#1a1a15] text-xs font-medium hover:bg-[#d1d1c1] transition-colors flex items-center gap-1 inline-flex cursor-pointer"
                                   >
                                     <Download className="w-3 h-3" />
                                     Скачать
@@ -622,7 +808,7 @@ zip_limits:
 
                                 <button 
                                   onClick={() => handleDeleteFile(file.id)}
-                                  className="p-1 rounded bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors"
+                                  className="p-1 rounded bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer"
                                   title="Удалить файл"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -664,8 +850,8 @@ zip_limits:
 
               <div className="bg-[#1e293b] text-[#f8fafc] p-4 rounded-2xl font-mono text-xs relative overflow-x-auto">
                 <button 
-                  onClick={() => copyToClipboard(`git clone https://github.com/your-user/lares.git
-cd lares
+                  onClick={() => copyToClipboard(`git clone https://github.com/Nekorosu/Lares.git
+cd Lares
 go build -o lares main.go`, 'step1')}
                   className="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-1 text-[11px]"
                 >
@@ -673,8 +859,8 @@ go build -o lares main.go`, 'step1')}
                   Копировать
                 </button>
                 <pre>{`# 1. Клонирование репозитория и переход в директорию
-git clone https://github.com/your-repo/lares.git
-cd lares
+git clone https://github.com/Nekorosu/Lares.git
+cd Lares
 
 # 2. Сборка бинарного файла Lares
 go build -o lares main.go
@@ -699,22 +885,20 @@ sudo chmod -R 750 /srv/media/fileshare /etc/lares`}</pre>
                 <button 
                   onClick={() => copyToClipboard(`sudo cp lares /usr/local/bin/lares
 sudo cp lares.service /etc/systemd/system/
-sudo useradd -r -s /bin/false lares
-sudo chown -R lares:lares /srv/media/fileshare /etc/lares /var/log/lares
 sudo systemctl daemon-reload
-sudo systemctl enable --now lares`, 'step2')}
+sudo systemctl restart lares.service
+sudo systemctl status lares.service`, 'step2')}
                   className="absolute top-3 right-3 px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-1 text-[11px]"
                 >
                   {copiedSection === 'step2' ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                   Копировать
                 </button>
-                <pre>{`sudo cp lares /usr/local/bin/lares
+                <pre>{`sudo systemctl stop lares.service
+sudo cp lares /usr/local/bin/lares
 sudo cp lares.service /etc/systemd/system/
-sudo useradd -r -s /bin/false lares
-sudo chown -R lares:lares /srv/media/fileshare /etc/lares /var/log/lares
 sudo systemctl daemon-reload
-sudo systemctl enable --now lares
-sudo systemctl status lares`}</pre>
+sudo systemctl restart lares.service
+sudo systemctl status lares.service`}</pre>
               </div>
             </div>
           </div>
@@ -859,13 +1043,252 @@ sudo systemctl status lares`}</pre>
         )}
       </main>
 
-      {/* Upload File Modal */}
+      {/* --- MODAL 1: STORAGE DETAILS MODAL --- */}
+      {showStorageModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-xl relative border border-[#e2e2d5] space-y-5">
+            <button 
+              onClick={() => setShowStorageModal(false)}
+              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] flex items-center justify-center">
+                <HardDrive className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Детализация Диска</h3>
+                <p className="text-xs text-[#8c8c7a]">Анализ использования дискового пространства Lares</p>
+              </div>
+            </div>
+
+            {/* Gauge bar */}
+            <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5] space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="font-semibold text-[#5A5A40] uppercase">Занятое пространство</span>
+                <span className="font-bold font-mono text-[#1a1a15]">{formatBytes(stats?.storage.used_bytes || 0)} / {formatBytes(stats?.storage.quota_bytes || 107374182400)}</span>
+              </div>
+
+              <div className="w-full h-3 bg-[#e2e2d5] rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-[#5A5A40] rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, Math.max(3, ((stats?.storage.used_bytes || 0) / (stats?.storage.quota_bytes || 1)) * 100))}%` }}
+                ></div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center pt-2">
+                <div className="bg-white p-2 rounded-xl border border-[#f0f0e0]">
+                  <span className="block text-[10px] text-[#8c8c7a] uppercase">Всего файлов</span>
+                  <span className="text-base font-bold text-[#1a1a15]">{files.length}</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-[#f0f0e0]">
+                  <span className="block text-[10px] text-[#8c8c7a] uppercase">Готовых</span>
+                  <span className="text-base font-bold text-emerald-700">{readyFilesCount}</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-[#f0f0e0]">
+                  <span className="block text-[10px] text-[#8c8c7a] uppercase">В карантине</span>
+                  <span className="text-base font-bold text-amber-700">{quarantinedFilesCount}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Actions */}
+            <div className="flex justify-end gap-2">
+              <button 
+                onClick={() => {
+                  setStatusFilter('quarantined');
+                  setShowStorageModal(false);
+                }}
+                className="px-4 py-2 rounded-xl bg-[#f0f0e0] text-[#5A5A40] text-xs font-semibold hover:bg-[#e2e2d5] transition-colors cursor-pointer"
+              >
+                Показать файлы в карантине
+              </button>
+              <button 
+                onClick={() => setShowStorageModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors cursor-pointer"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL 2: TRAFFIC DETAILS MODAL --- */}
+      {showTrafficModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-xl relative border border-[#e2e2d5] space-y-5">
+            <button 
+              onClick={() => setShowTrafficModal(false)}
+              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] flex items-center justify-center">
+                <Activity className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Сетевой Трафик и Ограничения</h3>
+                <p className="text-xs text-[#8c8c7a]">Учет объемов передачи за текущий месяц ({stats?.traffic.month || '2026-08'})</p>
+              </div>
+            </div>
+
+            {/* Traffic Cards */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5]">
+                <span className="text-[11px] font-semibold text-[#8c8c7a] uppercase block mb-1">Загружено на сервер</span>
+                <span className="text-xl font-bold font-mono text-[#5A5A40]">{formatBytes(stats?.traffic.upload_bytes || 0)}</span>
+              </div>
+              <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5]">
+                <span className="text-[11px] font-semibold text-[#8c8c7a] uppercase block mb-1">Скачано клиентами</span>
+                <span className="text-xl font-bold font-mono text-[#5A5A40]">{formatBytes(stats?.traffic.download_bytes || 0)}</span>
+              </div>
+            </div>
+
+            {/* Speed Limits Overview */}
+            <div className="bg-[#f5f5f0] p-4 rounded-2xl border border-[#e2e2d5] space-y-2 text-xs">
+              <span className="font-semibold text-[#1a1a15] block uppercase text-[11px] tracking-wider">Параметры шейпера полосы пропускания:</span>
+              <div className="flex justify-between py-1 border-b border-[#e2e2d5]">
+                <span className="text-[#8c8c7a]">Лимит внешней загрузки:</span>
+                <span className="font-mono font-medium text-[#1a1a15]">250 Mbps</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-[#e2e2d5]">
+                <span className="text-[#8c8c7a]">Лимит внешней выгрузки:</span>
+                <span className="font-mono font-medium text-[#1a1a15]">250 Mbps</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span className="text-[#8c8c7a]">Буфер всплеска (Burst):</span>
+                <span className="font-mono font-medium text-[#1a1a15]">16 MB</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button 
+                onClick={() => setShowTrafficModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors cursor-pointer"
+              >
+                Понятно
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL 3: ACTIVE SESSIONS MODAL --- */}
+      {showSessionsModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-xl relative border border-[#e2e2d5] space-y-5">
+            <button 
+              onClick={() => setShowSessionsModal(false)}
+              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex justify-between items-center pr-8">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] flex items-center justify-center">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Активные Сессии Устройств</h3>
+                  <p className="text-xs text-[#8c8c7a]">Управление привязанными клиентами и токенами доступа</p>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => {
+                  setShowSessionsModal(false);
+                  setShowInviteModal(true);
+                }}
+                className="px-3 py-1.5 rounded-full bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Новый Инвайт
+              </button>
+            </div>
+
+            {/* Sessions Table */}
+            <div className="overflow-x-auto max-h-80 overflow-y-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-[#f0f0e0] text-[11px] font-semibold text-[#8c8c7a] uppercase">
+                    <th className="py-2 px-3">Устройство / Польз.</th>
+                    <th className="py-2 px-3">IP Hash</th>
+                    <th className="py-2 px-3">Активность</th>
+                    <th className="py-2 px-3">Статус</th>
+                    <th className="py-2 px-3 text-right">Действие</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#f5f5f0] text-xs">
+                  {sessions.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-6 text-center text-[#8c8c7a]">
+                        Нет активных внешних сессий устройств.
+                      </td>
+                    </tr>
+                  ) : (
+                    sessions.map((sess) => (
+                      <tr key={sess.id} className="hover:bg-[#fcfcf9]">
+                        <td className="py-3 px-3">
+                          <div className="font-medium text-[#1a1a15]">{sess.device_name}</div>
+                          <div className="text-[10px] text-[#8c8c7a]">{sess.person_label}</div>
+                        </td>
+                        <td className="py-3 px-3 font-mono text-[#8c8c7a]">{sess.client_ip_hash || 'local_hash'}</td>
+                        <td className="py-3 px-3 text-[#8c8c7a]">
+                          {sess.last_seen_at ? new Date(sess.last_seen_at).toLocaleDateString('ru-RU') : 'Сегодня'}
+                        </td>
+                        <td className="py-3 px-3">
+                          {sess.revoked ? (
+                            <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-semibold text-[10px]">
+                              Отозвана
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold text-[10px]">
+                              Активна
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          {!sess.revoked && (
+                            <button 
+                              onClick={() => handleRevokeSession(sess.id)}
+                              className="px-2.5 py-1 rounded bg-rose-50 text-rose-600 hover:bg-rose-100 text-[11px] font-medium transition-colors cursor-pointer"
+                            >
+                              Отозвать
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end">
+              <button 
+                onClick={() => setShowSessionsModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors cursor-pointer"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL 4: UPLOAD FILE MODAL (WITH DRAG & DROP & PROGRESS) --- */}
       {showUploadModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-xl relative border border-[#e2e2d5]">
             <button 
               onClick={() => setShowUploadModal(false)}
-              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors"
+              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -883,7 +1306,10 @@ sudo systemctl status lares`}</pre>
             {uploadProgress === null ? (
               <div 
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-[#e2e2d5] hover:border-[#5A5A40] bg-[#fcfcf9] p-8 rounded-2xl text-center cursor-pointer transition-colors flex flex-col items-center gap-3"
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`border-2 border-dashed ${isDragging ? 'border-[#5A5A40] bg-[#f0f0e0]' : 'border-[#e2e2d5] hover:border-[#5A5A40] bg-[#fcfcf9]'} p-8 rounded-2xl text-center cursor-pointer transition-colors flex flex-col items-center gap-3`}
               >
                 <div className="w-12 h-12 rounded-full bg-[#5A5A40]/10 text-[#5A5A40] flex items-center justify-center">
                   <FileUp className="w-6 h-6" />
@@ -911,7 +1337,7 @@ sudo systemctl status lares`}</pre>
         </div>
       )}
 
-      {/* Invite Manager Modal */}
+      {/* --- MODAL 5: INVITE MANAGER MODAL --- */}
       {showInviteModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-xl relative border border-[#e2e2d5] space-y-5">
@@ -921,7 +1347,7 @@ sudo systemctl status lares`}</pre>
                 setNewInviteResult(null);
                 setActivationMsg(null);
               }}
-              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors"
+              className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -937,7 +1363,7 @@ sudo systemctl status lares`}</pre>
                 <span className="text-xs font-semibold text-[#5A5A40] uppercase tracking-wider">Сгенерировать новый код</span>
                 <button 
                   onClick={handleCreateInvite}
-                  className="px-3.5 py-1.5 rounded-full bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 rounded-full bg-[#5A5A40] text-white text-xs font-semibold hover:bg-[#484833] transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Создать
@@ -949,7 +1375,7 @@ sudo systemctl status lares`}</pre>
                   <span>Код: <strong>{newInviteResult}</strong></span>
                   <button 
                     onClick={() => copyToClipboard(newInviteResult, 'new_invite')}
-                    className="px-2 py-1 bg-emerald-700 text-white rounded text-[11px] font-sans font-medium"
+                    className="px-2 py-1 bg-emerald-700 text-white rounded text-[11px] font-sans font-medium cursor-pointer"
                   >
                     {copiedSection === 'new_invite' ? 'Скопировано!' : 'Скопировать'}
                   </button>
@@ -970,7 +1396,7 @@ sudo systemctl status lares`}</pre>
                 />
                 <button 
                   onClick={handleActivateInvite}
-                  className="px-4 py-2 bg-[#5A5A40] text-white rounded-xl text-xs font-semibold hover:bg-[#484833] transition-colors"
+                  className="px-4 py-2 bg-[#5A5A40] text-white rounded-xl text-xs font-semibold hover:bg-[#484833] transition-colors cursor-pointer"
                 >
                   Активировать
                 </button>
