@@ -220,7 +220,7 @@ func main() {
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		log.Printf("Warning loading config at %s (%v), using default configuration", *configPath, err)
-		cfg = config.GetDefaultConfig()
+		cfg = config.DefaultConfig()
 	}
 
 	// Ensure directories exist
@@ -311,7 +311,7 @@ func main() {
 		ipHash := auth.HashIP(clientIP, "lares_salt")
 
 		// Check rate limit
-		if isLocked, reason, _ := rl.IsLocked(ipHash); isLocked {
+		if isLocked, reason, _, _ := rl.IsLocked(ipHash); isLocked {
 			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Заблокировано: %s", reason))
 			return
 		}
@@ -332,7 +332,7 @@ func main() {
 		)
 
 		if err != nil || !invite.Enabled || !person.Enabled || invite.ActivationsUsed >= invite.MaxActivations || time.Now().After(invite.ExpiresAt) {
-			rl.RecordFailedAttempt(ipHash, "invite_activation", 5, 1*time.Hour, "Превышено количество попыток ввода инвайта")
+			rl.RecordInviteFailed(clientIP)
 			writeError(w, http.StatusUnauthorized, "Неверный или просроченный код инвайта")
 			return
 		}
@@ -404,7 +404,7 @@ func main() {
 		clientIP := getClientIP(r)
 		ipHash := auth.HashIP(clientIP, "lares_salt")
 
-		if isLocked, reason, _ := rl.IsLocked(ipHash); isLocked {
+		if isLocked, reason, _, _ := rl.IsLocked(ipHash); isLocked {
 			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Заблокировано: %s", reason))
 			return
 		}
@@ -418,7 +418,7 @@ func main() {
 		)
 
 		if err != nil || !auth.VerifyPassword(req.Password, admin.PasswordHash) {
-			rl.RecordFailedAttempt(ipHash, "admin_login", 5, 1*time.Hour, "Превышено количество неверных попыток входа администратора")
+			rl.RecordAdminFailedPassword(req.Username, clientIP)
 			writeError(w, http.StatusUnauthorized, "Неверный логин или пароль")
 			return
 		}
