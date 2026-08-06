@@ -86,13 +86,28 @@ interface DeviceSession {
 
 export default function App() {
   // Authentication State - 'unauthenticated' | 'user' | 'admin'
-  const [authState, setAuthState] = useState<'unauthenticated' | 'user' | 'admin'>('unauthenticated');
+  const [authState, setAuthState] = useState<'unauthenticated' | 'user' | 'admin'>(() => {
+    // Try to restore auth state from localStorage on initial load
+    const savedRole = localStorage.getItem('lares_user_role') as 'user' | 'admin' | null;
+    const savedAdminToken = localStorage.getItem('lares_admin_token');
+    if (savedRole === 'admin' && savedAdminToken) {
+      return 'admin';
+    } else if (savedRole === 'user') {
+      return 'user';
+    }
+    return 'unauthenticated';
+  });
   const [adminToken, setAdminToken] = useState<string | null>(() => {
     return localStorage.getItem('lares_admin_token') || null;
   });
   
   // Login/Register Form State
-  const [showLoginRegister, setShowLoginRegister] = useState<boolean>(true);
+  const [showLoginRegister, setShowLoginRegister] = useState<boolean>(() => {
+    // If we have a saved auth state, don't show login screen initially
+    const savedRole = localStorage.getItem('lares_user_role');
+    const savedAdminToken = localStorage.getItem('lares_admin_token');
+    return !(savedRole || savedAdminToken);
+  });
   const [loginMode, setLoginMode] = useState<'login' | 'register'>('login');
   const [inviteCodeInput, setInviteCodeInput] = useState<string>('');
   const [userNameInput, setUserNameInput] = useState<string>('');
@@ -725,7 +740,7 @@ zip_limits:
   return (
     <div className="min-h-screen bg-[#f5f5f0] text-[#1a1a15] font-sans flex flex-col relative">
       {/* Login/Register Screen - shown when not authenticated */}
-      {authState === 'unauthenticated' && showLoginRegister && (
+      {authState === 'unauthenticated' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#5A5A40]/20 backdrop-blur-sm">
           <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-[#e2e2d5] relative animate-in fade-in zoom-in duration-300">
             <div className="flex items-center gap-3 mb-6">
