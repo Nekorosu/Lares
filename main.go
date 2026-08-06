@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -129,6 +130,30 @@ func errorResponse(w http.ResponseWriter, status int, message string) {
 }
 
 func main() {
+	var configPath string
+	flag.StringVar(&configPath, "config", "/etc/lares/config.yaml", "path to config file")
+	flag.StringVar(&configPath, "c", "/etc/lares/config.yaml", "path to config file (shorthand)")
+	flag.Parse()
+
+	listenAddr := "0.0.0.0:8090"
+
+	// Attempt to read listen address from config file if present
+	if configPath != "" {
+		if content, err := os.ReadFile(configPath); err == nil {
+			lines := strings.Split(string(content), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "listen:") {
+					val := strings.TrimSpace(strings.TrimPrefix(line, "listen:"))
+					val = strings.Trim(val, `"'`)
+					if val != "" {
+						listenAddr = val
+					}
+				}
+			}
+		}
+	}
+
 	uploadDir := state.Config.UploadDir
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		log.Printf("Warning: failed to create upload dir: %v", err)
@@ -387,9 +412,8 @@ func main() {
 	fs := http.FileServer(http.Dir("./dist"))
 	mux.Handle("/", fs)
 
-	port := 3000
-	fmt.Printf("Lares Go Server listening on 0.0.0.0:%d\n", port)
-	if err := http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", port), mux); err != nil {
+	fmt.Printf("Lares Go Server listening on %s\n", listenAddr)
+	if err := http.ListenAndServe(listenAddr, mux); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
