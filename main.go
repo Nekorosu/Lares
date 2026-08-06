@@ -603,15 +603,14 @@ func main() {
 				ORDER BY f.created_at DESC
 			`, person.ID)
 		} else {
-			// Unauthenticated public list or fallback
+			// Unauthenticated public list or fallback (return all files so dashboard shows both ready and quarantined files)
 			rows, err = database.Query(`
 				SELECT f.id, f.person_id, f.original_name, f.stored_path, f.size, f.content_type, f.status,
 				       f.flagged, f.flag_reason, f.protected, f.keep_forever, f.expires_at, f.created_at, f.client_ip_hash,
 				       COALESCE(p.label, 'Общий доступ')
 				FROM files f
 				LEFT JOIN people p ON f.person_id = p.id
-				WHERE f.status = 'ready'
-				ORDER BY f.created_at DESC LIMIT 50
+				ORDER BY f.created_at DESC LIMIT 100
 			`)
 		}
 

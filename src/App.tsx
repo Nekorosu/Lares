@@ -154,6 +154,45 @@ export default function App() {
 
   useEffect(() => {
     refreshData();
+
+    // Global drag and drop event listeners for anywhere on screen
+    const handleWindowDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer?.types?.includes('Files')) {
+        setIsDragging(true);
+      }
+    };
+
+    const handleWindowDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.relatedTarget || (e.relatedTarget as HTMLElement).nodeName === 'HTML') {
+        setIsDragging(false);
+      }
+    };
+
+    const handleWindowDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        const file = e.dataTransfer.files[0];
+        setShowUploadModal(true);
+        setStatusFilter('all');
+        uploadFileProcess(file);
+      }
+    };
+
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('dragleave', handleWindowDragLeave);
+    window.addEventListener('drop', handleWindowDrop);
+
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('dragleave', handleWindowDragLeave);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
   }, []);
 
   const copyToClipboard = (text: string, sectionId: string) => {
@@ -473,7 +512,16 @@ zip_limits:
 `;
 
   return (
-    <div className="min-h-screen bg-[#f5f5f0] text-[#1a1a15] font-sans flex flex-col">
+    <div className="min-h-screen bg-[#f5f5f0] text-[#1a1a15] font-sans flex flex-col relative">
+      {/* Global Drag & Drop Overlay */}
+      {isDragging && (
+        <div className="fixed inset-0 bg-[#5A5A40]/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center text-white border-4 border-dashed border-white m-4 rounded-3xl pointer-events-none transition-all">
+          <FileUp className="w-16 h-16 animate-bounce mb-4" />
+          <h2 className="text-2xl font-bold font-serif">Отпустите файл для загрузки в Lares</h2>
+          <p className="text-sm opacity-90 mt-1">Файл будет передан и сохранен в файлообменнике</p>
+        </div>
+      )}
+
       {/* Top Bar / Header */}
       <header className="bg-white border-b border-[#e2e2d5] px-6 py-4 flex flex-wrap justify-between items-center shadow-xs">
         <div className="flex items-center gap-3">
@@ -573,9 +621,12 @@ zip_limits:
             {/* Metrics Grid — FULLY CLICKABLE METRICS CARDS */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {/* Card 1: Storage Meter (CLICKABLE) */}
-              <button 
+              <div 
+                role="button"
+                tabIndex={0}
                 onClick={() => setShowStorageModal(true)}
-                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden"
+                onKeyDown={(e) => e.key === 'Enter' && setShowStorageModal(true)}
+                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden select-none"
               >
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a] group-hover:text-[#5A5A40] transition-colors">Занято на диске</span>
@@ -598,12 +649,15 @@ zip_limits:
                     }}
                   ></div>
                 </div>
-              </button>
+              </div>
 
               {/* Card 2: Monthly Traffic (CLICKABLE) */}
-              <button 
+              <div 
+                role="button"
+                tabIndex={0}
                 onClick={() => setShowTrafficModal(true)}
-                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden"
+                onKeyDown={(e) => e.key === 'Enter' && setShowTrafficModal(true)}
+                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden select-none"
               >
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a] group-hover:text-[#5A5A40] transition-colors">Суммарный Трафик</span>
@@ -621,12 +675,15 @@ zip_limits:
                 <div className="w-full h-2.5 bg-[#e2e2d5] rounded-full overflow-hidden mt-4">
                   <div className="h-full bg-[#5A5A40] rounded-full" style={{ width: '42%' }}></div>
                 </div>
-              </button>
+              </div>
 
               {/* Card 3: Active Sessions (CLICKABLE) */}
-              <button 
+              <div 
+                role="button"
+                tabIndex={0}
                 onClick={() => setShowSessionsModal(true)}
-                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden"
+                onKeyDown={(e) => e.key === 'Enter' && setShowSessionsModal(true)}
+                className="bg-white p-6 rounded-3xl border border-[#f0f0e0] shadow-sm hover:border-[#5A5A40] hover:shadow-md transition-all text-left group cursor-pointer relative overflow-hidden select-none"
               >
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs font-semibold uppercase tracking-wider text-[#8c8c7a] group-hover:text-[#5A5A40] transition-colors">Активные Устройства</span>
@@ -647,7 +704,7 @@ zip_limits:
                   <span className="w-2.5 h-2.5 rounded-full bg-[#d4a373]"></span>
                   <span className="w-2.5 h-2.5 rounded-full bg-[#e2e2d5]"></span>
                 </div>
-              </button>
+              </div>
             </div>
 
             {/* Interactive File Management Section */}
