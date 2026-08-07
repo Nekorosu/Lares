@@ -1,0 +1,59 @@
+{{define "content"}}
+<h2>Обзор системы (Dashboard)</h2>
+
+<div class="grid">
+  <div class="card">
+    <h3>Диск /srv/media</h3>
+    <p style="font-size: 1.5rem; font-weight: 700; color: var(--accent-blue);">{{.FreeSpaceFormatted}} свободно</p>
+    <p style="color: var(--text-muted); font-size: 0.85rem;">Всего: {{.TotalSpaceFormatted}} | Inodes: {{.FreeInodes}}</p>
+  </div>
+
+  <div class="card">
+    <h3>Внешняя скорость</h3>
+    <p style="font-size: 1.2rem; font-weight: 600;">
+      ⬆ {{.UploadSpeedFormatted}} <br>
+      ⬇ {{.DownloadSpeedFormatted}}
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Активность</h3>
+    <p style="font-size: 1.1rem;">
+      Сессии: <strong>{{.ActiveSessionsCount}}</strong><br>
+      Активные загрузки: <strong>{{.ActiveUploadsCount}}</strong>
+    </p>
+  </div>
+
+  <div class="card" {{if gt .QuarantineCount 0}}style="border-color: var(--accent-amber);"{{end}}>
+    <h3>Карантин</h3>
+    <p style="font-size: 1.8rem; font-weight: 700; color: {{if gt .QuarantineCount 0}}var(--accent-amber){{else}}var(--text-muted){{end}};">
+      {{.QuarantineCount}} файлов
+    </p>
+    <a href="/admin/quarantine" class="btn btn-secondary btn-sm" style="margin-top: 0.5rem;">Перейти в карантин</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Последние события аудита</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Время</th>
+        <th>Субъект</th>
+        <th>Событие</th>
+        <th>Детали</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .RecentAuditLogs}}
+      <tr>
+        <td>{{.TimeFormatted}}</td>
+        <td><span class="badge badge-blue">{{.ActorType}} #{{.ActorID}}</span></td>
+        <td><strong>{{.Event}}</strong></td>
+        <td>{{.Details}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

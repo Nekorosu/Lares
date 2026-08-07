@@ -1,0 +1,42 @@
+{{define "content"}}
+<h2>Управление сессиями (Sessions)</h2>
+
+<div class="card">
+  <h3>Активные сессии устройств</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Пользователь</th>
+        <th>Устройство</th>
+        <th>Последняя активность</th>
+        <th>IP Hash</th>
+        <th>Истекает (Idle / Absolute)</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Sessions}}
+      <tr>
+        <td>#{{.ID}}</td>
+        <td><strong>{{.PersonLabel}}</strong></td>
+        <td>{{.Name}}</td>
+        <td>{{.LastUsedAtFormatted}}</td>
+        <td><code>{{.LastIPHashShort}}</code></td>
+        <td>{{.IdleExpiresFormatted}} / {{.AbsoluteExpiresFormatted}}</td>
+        <td style="display: flex; gap: 0.5rem;">
+          <form method="POST" action="/admin/sessions/revoke/{{.ID}}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-danger btn-sm">Отозвать</button>
+          </form>
+          <form method="POST" action="/admin/sessions/revoke-all/{{.PersonID}}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-secondary btn-sm">Отозвать все у пользователя</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

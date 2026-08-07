@@ -1,39 +1,25 @@
 [Unit]
-Description=Lares Self-Hosted File Exchange Service
+Description=Lares Homeshare Secure File Sharing Service
 After=network.target
-StartLimitIntervalSec=60
-StartLimitBurst=3
 
 [Service]
 Type=simple
-User=lares
-Group=lares
-ExecStart=/usr/local/bin/lares -config /etc/lares/config.yaml
+User=homeshare
+Group=homeshare
+ExecStart=/usr/local/bin/homeshare serve
+WorkingDirectory=/var/lib/homeshare
 Restart=on-failure
 RestartSec=5s
-WorkingDirectory=/srv/media/fileshare
 
-# Hardening
+# Hardening & Security
 NoNewPrivileges=true
 ProtectSystem=strict
+ProtectHome=read-only
 PrivateTmp=true
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-RestrictNamespaces=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-RestrictRealtime=true
-SystemCallArchitectures=native
-
-ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/lares
-ReadOnlyPaths=/etc/lares
+ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/homeshare /etc/homeshare
 
 # Limits
 LimitNOFILE=65536
-LimitNPROC=512
 
 [Install]
 WantedBy=multi-user.target

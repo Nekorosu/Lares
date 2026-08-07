@@ -1,0 +1,8 @@
+[homeshare]
+enabled = true
+filter = homeshare
+logpath = /var/log/homeshare/security.log
+maxretry = 5
+findtime = 15m
+bantime = 1h
+port = http,https

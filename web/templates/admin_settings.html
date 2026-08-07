@@ -1,0 +1,76 @@
+{{define "content"}}
+<h2>Настройки системы и Блокировки (Settings)</h2>
+
+<div class="card">
+  <h3>Активные блокировки Rate Limit</h3>
+  {{if .Locks}}
+  <table>
+    <thead>
+      <tr>
+        <th>Ключ (Key)</th>
+        <th>Тип</th>
+        <th>Причина</th>
+        <th>Истекает</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Locks}}
+      <tr>
+        <td><code>{{.Key}}</code></td>
+        <td><span class="badge badge-amber">{{.Type}}</span></td>
+        <td>{{.Reason}}</td>
+        <td>{{.ExpiresAtFormatted}}</td>
+        <td>
+          <form method="POST" action="/admin/locks/clear/{{.Key}}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-secondary btn-sm">Разблокировать</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <form method="POST" action="/admin/locks/clear-all" style="margin-top: 1rem;">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <button type="submit" class="btn btn-danger">Сбросить ВСЕ блокировки rate limit</button>
+  </form>
+  {{else}}
+  <p style="color: var(--text-muted); padding: 1rem 0;">Активных блокировок rate limit нет.</p>
+  {{end}}
+</div>
+
+<div class="card">
+  <h3>Параметры скорости и лимитов</h3>
+  <form method="POST" action="/admin/settings/save">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="grid">
+      <div class="form-group">
+        <label>Внешний лимит загрузки (Mbps)</label>
+        <input type="number" name="external_upload_mbps" class="form-control" value="{{.Config.SpeedLimits.ExternalUploadMbps}}" min="10" max="1000" required>
+      </div>
+      <div class="form-group">
+        <label>Внешний лимит скачивания (Mbps)</label>
+        <input type="number" name="external_download_mbps" class="form-control" value="{{.Config.SpeedLimits.ExternalDownloadMbps}}" min="10" max="1000" required>
+      </div>
+      <div class="form-group">
+        <label>Burst (MB)</label>
+        <input type="number" name="burst_mb" class="form-control" value="{{.Config.SpeedLimits.BurstMB}}" min="1" max="128" required>
+      </div>
+      <div class="form-group">
+        <label>ZIP Макс. файлов</label>
+        <input type="number" name="zip_max_files" class="form-control" value="{{.Config.ZipLimits.MaxFiles}}" min="1" required>
+      </div>
+      <div class="form-group">
+        <label>ZIP Макс. суммарный размер (ГБ)</label>
+        <input type="number" name="zip_max_total_gb" class="form-control" value="{{.Config.ZipLimits.MaxTotalGB}}" min="1" required>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Подозрительные расширения (через запятую):</label>
+      <input type="text" name="suspicious_extensions" class="form-control" value="{{.SuspiciousExtensionsStr}}">
+    </div>
+    <button type="submit" class="btn btn-primary">Сохранить настройки</button>
+  </form>
+</div>
+{{end}}

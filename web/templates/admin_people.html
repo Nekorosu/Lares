@@ -1,0 +1,92 @@
+{{define "content"}}
+<h2>Управление пользователями (People)</h2>
+
+<div class="card">
+  <h3>Создать пользователя (Person)</h3>
+  <form method="POST" action="/admin/people/create">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="grid">
+      <div class="form-group">
+        <label>Имя / Метка (Label)</label>
+        <input type="text" name="label" class="form-control" placeholder="Например: Александр" required>
+      </div>
+      <div class="form-group">
+        <label>Заметки (Notes)</label>
+        <input type="text" name="notes" class="form-control" placeholder="Доп. информация">
+      </div>
+      <div class="form-group">
+        <label>Квота хранилища (ГБ)</label>
+        <input type="number" name="storage_quota_gb" class="form-control" value="100" required>
+      </div>
+      <div class="form-group">
+        <label>Лимит загрузки в месяц (ГБ)</label>
+        <input type="number" name="monthly_upload_gb" class="form-control" value="200" required>
+      </div>
+      <div class="form-group">
+        <label>Лимит скачивания в месяц (ГБ)</label>
+        <input type="number" name="monthly_download_gb" class="form-control" value="300" required>
+      </div>
+      <div class="form-group">
+        <label>Макс. размер файла (ГБ)</label>
+        <input type="number" name="max_file_size_gb" class="form-control" value="50" required>
+      </div>
+    </div>
+    <div style="display: flex; gap: 1.5rem; align-items: center; margin-bottom: 1rem;">
+      <label><input type="checkbox" name="ignore_traffic_quota" value="true"> Игнорировать трафик-квоту</label>
+      <label><input type="checkbox" name="allow_user_keep_forever" value="true"> Разрешить «хранить бессрочно»</label>
+    </div>
+    <button type="submit" class="btn btn-primary">Создать Person</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Список пользователей</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Имя / Метка</th>
+        <th>Статус</th>
+        <th>Квота хранилища</th>
+        <th>Лимиты Загрузка / Скачивание</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .People}}
+      <tr>
+        <td>#{{.ID}}</td>
+        <td><strong>{{.Label}}</strong> <br><small style="color: var(--text-muted);">{{.Notes}}</small></td>
+        <td>
+          {{if .Enabled}}
+            <span class="badge badge-green">Активен</span>
+          {{else}}
+            <span class="badge badge-red">Отключен</span>
+          {{end}}
+        </td>
+        <td>{{.StorageQuotaFormatted}}</td>
+        <td>{{.UploadLimitFormatted}} / {{.DownloadLimitFormatted}}</td>
+        <td style="display: flex; gap: 0.5rem;">
+          <a href="/admin/invites?person_id={{.ID}}" class="btn btn-secondary btn-sm">Создать инвайт</a>
+          {{if .Enabled}}
+            <form method="POST" action="/admin/people/disable/{{.ID}}" style="display: inline;">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <button type="submit" class="btn btn-secondary btn-sm">Отключить</button>
+            </form>
+          {{else}}
+            <form method="POST" action="/admin/people/enable/{{.ID}}" style="display: inline;">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <button type="submit" class="btn btn-primary btn-sm">Включить</button>
+            </form>
+          {{end}}
+          <form method="POST" action="/admin/people/delete/{{.ID}}" style="display: inline;" onsubmit="return confirm('Удалить пользователя? Нажмите OK для сохранения файлов как осиротевших, или Cancel для отмены.');">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-danger btn-sm">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

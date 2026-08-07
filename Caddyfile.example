@@ -1,5 +1,4 @@
-# Caddyfile for lares
-
+# External Domain (Let's Encrypt TLS)
 files.example.duckdns.org {
     reverse_proxy 127.0.0.1:8090 {
         header_up X-Real-IP {http.request.remote.host}
@@ -7,7 +6,8 @@ files.example.duckdns.org {
     }
 }
 
-https://192.168.32.x {
+# Local Network IP (Internal TLS)
+https://192.168.32.100 {
     tls internal
     reverse_proxy 127.0.0.1:8090 {
         header_up X-Real-IP {http.request.remote.host}

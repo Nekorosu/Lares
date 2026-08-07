@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{.Title}} - Lares File Sharing</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="17 8 12 3 7 8"></polyline>
+        <line x1="12" y1="3" x2="12" y2="15"></line>
+      </svg>
+      Lares Homeshare
+    </div>
+    <nav>
+      {{if .IsAdmin}}
+        <a href="/admin/dashboard" {{if eq .Page "dashboard"}}class="active"{{end}}>Главная</a>
+        <a href="/admin/people" {{if eq .Page "people"}}class="active"{{end}}>Пользователи</a>
+        <a href="/admin/invites" {{if eq .Page "invites"}}class="active"{{end}}>Инвайты</a>
+        <a href="/admin/sessions" {{if eq .Page "sessions"}}class="active"{{end}}>Сессии</a>
+        <a href="/admin/files" {{if eq .Page "files"}}class="active"{{end}}>Файлы</a>
+        <a href="/admin/quarantine" {{if eq .Page "quarantine"}}class="active"{{end}}>Карантин</a>
+        <a href="/admin/traffic" {{if eq .Page "traffic"}}class="active"{{end}}>Трафик</a>
+        <a href="/admin/settings" {{if eq .Page "settings"}}class="active"{{end}}>Настройки</a>
+        <a href="/logout" class="btn btn-secondary">Выйти</a>
+      {{else if .User}}
+        <a href="/" {{if eq .Page "home"}}class="active"{{end}}>Файлообменник</a>
+        <a href="/logout" class="btn btn-secondary">Выйти</a>
+      {{end}}
+    </nav>
+  </header>
+
+  <main>
+    {{if .Error}}
+      <div class="alert alert-danger">{{.Error}}</div>
+    {{end}}
+    {{if .Success}}
+      <div class="alert alert-success">{{.Success}}</div>
+    {{end}}
+
+    {{template "content" .}}
+  </main>
+
+  <footer>
+    <p>Lares Homeshare &copy; 2026. Все права защищены. Локальный защищенный файлообменник.</p>
+  </footer>
+  <script src="/static/upload.js"></script>
+</body>
+</html>

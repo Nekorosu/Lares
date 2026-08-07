@@ -1,0 +1,43 @@
+{{define "content"}}
+<h2>Файлы в карантине (Quarantine)</h2>
+
+<div class="card">
+  {{if .Files}}
+  <table>
+    <thead>
+      <tr>
+        <th>Имя файла</th>
+        <th>Причина карантина</th>
+        <th>Пользователь</th>
+        <th>Размер</th>
+        <th>Дата загрузки</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Files}}
+      <tr>
+        <td><strong>{{.OriginalName}}</strong></td>
+        <td><span class="badge badge-amber">{{.FlagReason}}</span></td>
+        <td>{{.UploaderName}}</td>
+        <td>{{.SizeFormatted}}</td>
+        <td>{{.CreatedAtFormatted}}</td>
+        <td style="display: flex; gap: 0.5rem;">
+          <form method="POST" action="/admin/quarantine/approve/{{.ID}}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-primary btn-sm">Одобрить (Approve)</button>
+          </form>
+          <form method="POST" action="/admin/files/delete/{{.ID}}" style="display: inline;" onsubmit="return confirm('Удалить файл?');">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-danger btn-sm">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p style="color: var(--text-muted); padding: 2rem 0; text-align: center;">В карантине нет файлов. Все загруженные файлы проверены.</p>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,37 @@
+{{define "content"}}
+<h2>Учет трафика (Traffic & Quotas)</h2>
+
+<div class="card">
+  <h3>Текущий месяц ({{.CurrentMonth}})</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Пользователь</th>
+        <th>Загрузка (Completed / Aborted)</th>
+        <th>Скачивание (Completed / Aborted)</th>
+        <th>Эффективный расчёт</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .CurrentTraffic}}
+      <tr>
+        <td><strong>{{.PersonLabel}}</strong></td>
+        <td>{{.UploadCompletedFormatted}} / <small style="color: var(--accent-red);">{{.UploadAbortedFormatted}}</small></td>
+        <td>{{.DownloadCompletedFormatted}} / <small style="color: var(--accent-red);">{{.DownloadAbortedFormatted}}</small></td>
+        <td>
+          Загрузка: {{.UploadEffectiveFormatted}} / {{.UploadLimitFormatted}}<br>
+          Скачивание: {{.DownloadEffectiveFormatted}} / {{.DownloadLimitFormatted}}
+        </td>
+        <td>
+          <form method="POST" action="/admin/traffic/reset/{{.PersonID}}" style="display: inline;" onsubmit="return confirm('Сбросить счетчик текущего месяца?');">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-secondary btn-sm">Сбросить месяц</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

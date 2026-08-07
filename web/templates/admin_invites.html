@@ -1,0 +1,81 @@
+{{define "content"}}
+<h2>Управление инвайт-кодами (Invites)</h2>
+
+{{if .NewInviteCode}}
+<div class="card" style="border-color: var(--accent-green); background: rgba(34, 197, 94, 0.05);">
+  <h3 style="color: var(--accent-green);">Инвайт-код успешно создан!</h3>
+  <p style="margin-bottom: 1rem;">Сохраните код или сканируйте QR-код. <strong>Код показывается ровно один раз!</strong></p>
+  <div style="display: flex; gap: 2rem; align-items: center; flex-wrap: wrap;">
+    <div>
+      <p style="font-size: 0.9rem; color: var(--text-muted);">Инвайт-код:</p>
+      <input type="text" value="{{.NewInviteCode}}" readonly class="form-control" style="font-size: 1.5rem; font-family: monospace; letter-spacing: 2px; text-align: center; font-weight: 700; width: 320px;">
+    </div>
+    {{if .NewInviteQRData}}
+    <div>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem;">QR-код для активации:</p>
+      <img src="data:image/png;base64,{{.NewInviteQRData}}" alt="Invite QR" style="border-radius: 8px; border: 2px solid var(--border-color);">
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Создать новый инвайт-код</h3>
+  <form method="POST" action="/admin/invites/create">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="grid">
+      <div class="form-group">
+        <label>Пользователь (Person)</label>
+        <select name="person_id" class="form-control" required>
+          {{range .People}}
+            <option value="{{.ID}}" {{if eq .ID $.SelectedPersonID}}selected{{end}}>{{.Label}} (#{{.ID}})</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Максимум активаций</label>
+        <input type="number" name="max_activations" class="form-control" value="1" min="1" required>
+      </div>
+      <div class="form-group">
+        <label>Срок действия (в часах)</label>
+        <input type="number" name="expires_hours" class="form-control" value="24" min="1" required>
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">Сгенерировать инвайт</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Активные инвайты</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Пользователь</th>
+        <th>Префикс кода</th>
+        <th>Активаций</th>
+        <th>Истекает</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Invites}}
+      <tr>
+        <td>#{{.ID}}</td>
+        <td>{{.PersonLabel}}</td>
+        <td><code>{{.CodePrefix}}</code></td>
+        <td>{{.ActivationsUsed}} / {{.MaxActivations}}</td>
+        <td>{{.ExpiresAtFormatted}}</td>
+        <td>
+          <form method="POST" action="/admin/invites/revoke/{{.ID}}" style="display: inline;">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-danger btn-sm">Отозвать</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
