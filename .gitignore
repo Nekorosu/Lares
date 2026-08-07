@@ -1,62 +1,41 @@
-```gitignore
-# Dependencies
+# Node / Web artifacts
 node_modules/
-.pnpm-store/
-.yarn/
-.yarn-cache/
-
-# Build outputs
-dist/
 build/
+dist/
 coverage/
-.nyc_output/
-.eslintcache
 
-# Environment variables
+# Go build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Go cache directories
+go/pkg/mod/
+go/build/
+
+# Dependencies
+vendor/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
 .env
 .env.local
-.env.*
+*.env.*
 !.env.example
 
-# IDE specific
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
 
-# OS generated
+# OS generated files
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-
-# Python specific (if applicable)
-__pycache__/
-*.pyc
-*.pyo
-.Python
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-
-# Node.js specific (if applicable)
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Compiled JavaScript
-*.js.map
-*.jsx.map
-*.ts.map
-*.tsx.map
-
-# Testing
-.jest/
-coverage/
-
-# Local configuration
-local.properties
-```

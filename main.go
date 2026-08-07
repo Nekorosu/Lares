@@ -161,74 +161,25 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Auth Login - supports both admin password and user login
+	// Auth Login
 	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
 			return
 		}
 		var req struct {
-			Username string `json:"username,omitempty"`
 			Password string `json:"password"`
 		}
 		json.NewDecoder(r.Body).Decode(&req)
-		
-		// Check for admin password
 		if req.Password == "admin" || req.Password == "admin123" || req.Password == "123456" {
 			jsonResponse(w, http.StatusOK, map[string]string{
 				"role":     "admin",
 				"username": "Администратор",
 				"token":    "admin-session-token-" + randomHex(8),
 			})
-			return
+		} else {
+			errorResponse(w, http.StatusUnauthorized, "Неверный пароль администратора. Используйте: admin")
 		}
-		
-		// For regular users - in demo mode, accept any username/password combo
-		// In production, this would check against a database
-		if req.Username != "" && req.Password != "" {
-			jsonResponse(w, http.StatusOK, map[string]string{
-				"role":     "user",
-				"username": req.Username,
-				"token":    "user-session-token-" + randomHex(8),
-			})
-			return
-		}
-		
-		errorResponse(w, http.StatusUnauthorized, "Неверное имя пользователя или пароль")
-	})
-
-	// Auth Register - new user registration with invite code
-	mux.HandleFunc("/api/auth/register", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
-			return
-		}
-		var req struct {
-			Username   string `json:"username"`
-			Password   string `json:"password"`
-			InviteCode string `json:"invite_code"`
-		}
-		json.NewDecoder(r.Body).Decode(&req)
-		
-		// Validate invite code (in demo mode, accept any non-empty code starting with LARE-)
-		if req.InviteCode == "" || !strings.HasPrefix(strings.ToUpper(req.InviteCode), "LARE-") {
-			errorResponse(w, http.StatusBadRequest, "Недействительный инвайт-код")
-			return
-		}
-		
-		// Validate username and password
-		if req.Username == "" || req.Password == "" {
-			errorResponse(w, http.StatusBadRequest, "Имя пользователя и пароль обязательны")
-			return
-		}
-		
-		// In demo mode, registration always succeeds
-		// In production, this would create a user record and validate the invite code
-		jsonResponse(w, http.StatusOK, map[string]string{
-			"message":  "Регистрация успешна",
-			"username": req.Username,
-			"role":     "user",
-		})
 	})
 
 	// Health

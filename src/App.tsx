@@ -85,44 +85,18 @@ interface DeviceSession {
 }
 
 export default function App() {
-  // Authentication State - 'unauthenticated' | 'user' | 'admin'
-  const [authState, setAuthState] = useState<'unauthenticated' | 'user' | 'admin'>(() => {
-    // Try to restore auth state from localStorage on initial load
-    const savedRole = localStorage.getItem('lares_user_role') as 'user' | 'admin' | null;
-    const savedAdminToken = localStorage.getItem('lares_admin_token');
-    if (savedRole === 'admin' && savedAdminToken) {
-      return 'admin';
-    } else if (savedRole === 'user') {
-      return 'user';
-    }
-    return 'unauthenticated';
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'guide' | 'config' | 'architecture'>('dashboard');
+  const [copiedSection, setCopiedSection] = useState<string | null>(null);
+
+  // Role & Authentication State
+  const [userRole, setUserRole] = useState<'user' | 'admin'>(() => {
+    return (localStorage.getItem('lares_user_role') as 'user' | 'admin') || 'user';
   });
   const [adminToken, setAdminToken] = useState<string | null>(() => {
     return localStorage.getItem('lares_admin_token') || null;
   });
-  
-  // Login/Register Form State
-  const [showLoginRegister, setShowLoginRegister] = useState<boolean>(() => {
-    // If we have a saved auth state, don't show login screen initially
-    const savedRole = localStorage.getItem('lares_user_role');
-    const savedAdminToken = localStorage.getItem('lares_admin_token');
-    return !(savedRole || savedAdminToken);
-  });
-  const [loginMode, setLoginMode] = useState<'login' | 'register'>('login');
-  const [inviteCodeInput, setInviteCodeInput] = useState<string>('');
-  const [userNameInput, setUserNameInput] = useState<string>('');
-  const [loginPasswordInput, setLoginPasswordInput] = useState<string>('');
-  const [authErrorMsg, setAuthErrorMsg] = useState<string | null>(null);
-  const [authLoading, setAuthLoading] = useState<boolean>(false);
-
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'guide' | 'config' | 'architecture'>('dashboard');
-  const [copiedSection, setCopiedSection] = useState<string | null>(null);
-  
-  // Legacy Role State (for backward compatibility)
-  const [userRole, setUserRole] = useState<'user' | 'admin'>(() => {
-    return (localStorage.getItem('lares_user_role') as 'user' | 'admin') || 'user';
-  });
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
+  const [loginPasswordInput, setLoginPasswordInput] = useState<string>('admin');
   const [loginErrorMsg, setLoginErrorMsg] = useState<string | null>(null);
 
   // Live Data State
@@ -183,19 +157,34 @@ export default function App() {
     const reqHeaders = getAuthHeaders();
     try {
       const [resStats, resFiles, resInvites, resSessions] = await Promise.all([
-        fetch('/api/stats', { headers: reqHeaders }),
-        fetch('/api/files', { headers: reqHeaders }),
-        fetch('/api/admin/invites', { headers: reqHeaders }),
-        fetch('/api/admin/sessions', { headers: reqHeaders })
+        fetch('/api/stats', { headers: reqHeaders }).catch(() => null),
+        fetch('/api/files', { headers: reqHeaders }).catch(() => null),
+        fetch('/api/admin/invites', { headers: reqHeaders }).catch(() => null),
+        fetch('/api/admin/sessions', { headers: reqHeaders }).catch(() => null)
       ]);
 
-      if (resStats.ok) setStats(await resStats.json());
-      if (resFiles.ok) {
-        const fetchedFiles = await resFiles.json();
-        setFiles(fetchedFiles);
+      if (resStats && resStats.ok) {
+        const data = await resStats.json().catch(() => null);
+        if (data && typeof data === 'object') setStats(data);
       }
-      if (resInvites.ok) setInvites(await resInvites.json()); else setInvites([]);
-      if (resSessions.ok) setSessions(await resSessions.json()); else setSessions([]);
+      if (resFiles && resFiles.ok) {
+        const fetchedFiles = await resFiles.json().catch(() => null);
+        if (Array.isArray(fetchedFiles)) setFiles(fetchedFiles);
+      }
+      if (resInvites && resInvites.ok) {
+        const fetchedInvites = await resInvites.json().catch(() => null);
+        if (Array.isArray(fetchedInvites)) setInvites(fetchedInvites);
+        else setInvites([]);
+      } else {
+        setInvites([]);
+      }
+      if (resSessions && resSessions.ok) {
+        const fetchedSessions = await resSessions.json().catch(() => null);
+        if (Array.isArray(fetchedSessions)) setSessions(fetchedSessions);
+        else setSessions([]);
+      } else {
+        setSessions([]);
+      }
     } catch (err) {
       console.error('Failed to fetch live API data:', err);
     } finally {
@@ -203,7 +192,7 @@ export default function App() {
     }
   };
 
-  // Admin login handler (legacy - keep for backward compatibility)
+  // Admin login handler
   const handleAdminLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setLoginErrorMsg(null);
@@ -216,7 +205,6 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         setUserRole('admin');
-        setAuthState('admin');
         setAdminToken(data.token);
         localStorage.setItem('lares_user_role', 'admin');
         localStorage.setItem('lares_admin_token', data.token);
@@ -232,88 +220,9 @@ export default function App() {
     }
   };
 
-  // New unified auth handler - Login or Register
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthErrorMsg(null);
-    setAuthLoading(true);
-
-    try {
-      if (loginMode === 'register') {
-        // Registration requires invite code
-        if (!inviteCodeInput.trim()) {
-          setAuthErrorMsg('Требуется инвайт-код для регистрации');
-          setAuthLoading(false);
-          return;
-        }
-        const res = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            username: userNameInput, 
-            password: loginPasswordInput,
-            invite_code: inviteCodeInput 
-          })
-        });
-        const data = await res.json();
-        if (res.ok) {
-          // Registration successful - auto-login as user
-          setAuthState('user');
-          setShowLoginRegister(false);
-          setTimeout(() => refreshData(), 100);
-        } else {
-          setAuthErrorMsg(data.error || 'Ошибка регистрации');
-        }
-      } else {
-        // Login mode - check if admin password or regular login
-        if (loginPasswordInput === 'admin' || loginPasswordInput === 'admin123') {
-          // Admin login shortcut
-          const res = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: loginPasswordInput })
-          });
-          const data = await res.json();
-          if (res.ok) {
-            setAuthState('admin');
-            setUserRole('admin');
-            setAdminToken(data.token);
-            localStorage.setItem('lares_user_role', 'admin');
-            localStorage.setItem('lares_admin_token', data.token);
-            setShowLoginRegister(false);
-            setTimeout(() => refreshData(), 100);
-          } else {
-            setAuthErrorMsg(data.error || 'Неверный пароль администратора');
-          }
-        } else {
-          // Regular user login
-          const res = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: userNameInput, password: loginPasswordInput })
-          });
-          const data = await res.json();
-          if (res.ok) {
-            setAuthState('user');
-            setUserRole('user');
-            setShowLoginRegister(false);
-            setTimeout(() => refreshData(), 100);
-          } else {
-            setAuthErrorMsg(data.error || 'Неверное имя пользователя или пароль');
-          }
-        }
-      }
-    } catch (err) {
-      setAuthErrorMsg('Ошибка соединения с сервером');
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  // Switch back to standard user role / logout from admin
+  // Switch back to standard user role
   const handleLogoutToUser = () => {
     setUserRole('user');
-    setAuthState('user');
     setAdminToken(null);
     localStorage.setItem('lares_user_role', 'user');
     localStorage.removeItem('lares_admin_token');
@@ -321,23 +230,6 @@ export default function App() {
       setActiveTab('dashboard');
     }
     setTimeout(() => refreshData(), 100);
-  };
-
-  // Full logout - return to login screen
-  const handleFullLogout = () => {
-    setUserRole('user');
-    setAuthState('unauthenticated');
-    setAdminToken(null);
-    localStorage.setItem('lares_user_role', 'user');
-    localStorage.removeItem('lares_admin_token');
-    setShowLoginRegister(true);
-    setLoginMode('login');
-    setInviteCodeInput('');
-    setUserNameInput('');
-    setLoginPasswordInput('');
-    if (activeTab === 'config') {
-      setActiveTab('dashboard');
-    }
   };
 
   useEffect(() => {
@@ -541,24 +433,26 @@ export default function App() {
   };
 
   // Delete file handler
-  const handleDeleteFile = async (file: FileRecord) => {
-    if (userRole !== 'admin' && file.uploader_label === 'Администратор') {
+  const handleDeleteFile = async (file: FileRecord | string) => {
+    const targetFile = typeof file === 'string' ? (Array.isArray(files) ? files.find(f => f && f.id === file) : null) : file;
+    if (!targetFile) return;
+    if (userRole !== 'admin' && targetFile.uploader_label === 'Администратор') {
       alert('Ошибка доступа: Обычному пользователю запрещено удалять файлы Администратора! Чтобы удалить этот файл, войдите как Администратор.');
       setShowLoginModal(true);
       return;
     }
 
-    if (!confirm(`Вы уверены, что хотите удалить файл "${file.original_name}"?`)) return;
+    if (!confirm(`Вы уверены, что хотите удалить файл "${targetFile.original_name}"?`)) return;
     try {
-      const res = await fetch(`/api/files/delete/${file.id}`, { 
+      const res = await fetch(`/api/files/delete/${targetFile.id}`, { 
         method: 'DELETE',
         headers: getAuthHeaders()
       });
       if (res.ok) {
-        setFiles(prev => prev.filter(f => f.id !== file.id));
+        setFiles(prev => (Array.isArray(prev) ? prev.filter(f => f && f.id !== targetFile.id) : []));
         refreshData();
       } else {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         alert(data.error || 'Ошибка удаления файла');
       }
     } catch (err) {
@@ -692,16 +586,24 @@ export default function App() {
     }
   };
 
+  const safeFiles = Array.isArray(files) ? files : [];
+  const safeInvites = Array.isArray(invites) ? invites : [];
+  const safeSessions = Array.isArray(sessions) ? sessions : [];
+
   // Filtered files calculation
-  const filteredFiles = files.filter(f => {
-    const matchesSearch = f.original_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          (f.uploader_label && f.uploader_label.toLowerCase().includes(searchQuery.toLowerCase()));
+  const filteredFiles = safeFiles.filter(f => {
+    if (!f) return false;
+    const name = f.original_name || '';
+    const uploader = f.uploader_label || '';
+    const q = searchQuery || '';
+    const matchesSearch = name.toLowerCase().includes(q.toLowerCase()) ||
+                          uploader.toLowerCase().includes(q.toLowerCase());
     const matchesStatus = statusFilter === 'all' || f.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
 
-  const readyFilesCount = files.filter(f => f.status === 'ready').length;
-  const quarantinedFilesCount = files.filter(f => f.status === 'quarantined').length;
+  const readyFilesCount = safeFiles.filter(f => f && f.status === 'ready').length;
+  const quarantinedFilesCount = safeFiles.filter(f => f && f.status === 'quarantined').length;
 
   const generatedYaml = `# Lares Configuration File
 listen: "${cfgListen}"
@@ -739,132 +641,6 @@ zip_limits:
 
   return (
     <div className="min-h-screen bg-[#f5f5f0] text-[#1a1a15] font-sans flex flex-col relative">
-      {/* Login/Register Screen - shown when not authenticated */}
-      {authState === 'unauthenticated' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#5A5A40]/20 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-[#e2e2d5] relative animate-in fade-in zoom-in duration-300">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-14 h-14 rounded-2xl bg-[#5A5A40] text-white flex items-center justify-center font-serif text-2xl font-bold shadow-xs">
-                L
-              </div>
-              <div>
-                <h2 className="font-serif text-2xl font-bold text-[#1a1a15]">Lares</h2>
-                <p className="text-xs text-[#8c8c7a] font-medium">Войдите или зарегистрируйтесь</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleAuthSubmit} className="space-y-4">
-              {loginMode === 'register' && (
-                <>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
-                      Инвайт-код
-                    </label>
-                    <input 
-                      type="text"
-                      value={inviteCodeInput}
-                      onChange={(e) => setInviteCodeInput(e.target.value)}
-                      placeholder="LARE-XXXX-XXXX-XXXX"
-                      className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
-                      autoFocus
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
-                      Имя пользователя
-                    </label>
-                    <input 
-                      type="text"
-                      value={userNameInput}
-                      onChange={(e) => setUserNameInput(e.target.value)}
-                      placeholder="Введите имя..."
-                      className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
-                    />
-                  </div>
-                </>
-              )}
-
-              {loginMode === 'login' && (
-                <div>
-                  <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
-                    Имя пользователя
-                  </label>
-                  <input 
-                    type="text"
-                    value={userNameInput}
-                    onChange={(e) => setUserNameInput(e.target.value)}
-                    placeholder="Введите имя или используйте 'admin'..."
-                    className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
-                    autoFocus
-                  />
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
-                  Пароль
-                </label>
-                <input 
-                  type="password"
-                  value={loginPasswordInput}
-                  onChange={(e) => setLoginPasswordInput(e.target.value)}
-                  placeholder="Введите пароль..."
-                  className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
-                />
-                {loginMode === 'login' && (
-                  <p className="text-[11px] text-[#8c8c7a] mt-1.5">
-                    Для входа как администратор используйте пароль: <code className="bg-[#f0f0e0] px-1.5 py-0.5 rounded text-xs font-mono font-bold text-[#5A5A40]">admin</code>
-                  </p>
-                )}
-              </div>
-
-              {authErrorMsg && (
-                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                  <span>{authErrorMsg}</span>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={authLoading}
-                className="w-full py-3 rounded-xl bg-[#5A5A40] text-white text-sm font-bold hover:bg-[#484833] transition-colors shadow-xs cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {authLoading ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : loginMode === 'register' ? (
-                  <>
-                    <CheckCircle2 className="w-4 h-4" />
-                    Зарегистрироваться
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck className="w-4 h-4" />
-                    Войти
-                  </>
-                )}
-              </button>
-
-              <div className="pt-2 border-t border-[#e2e2d5] flex justify-between items-center">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginMode(loginMode === 'login' ? 'register' : 'login');
-                    setAuthErrorMsg(null);
-                    setInviteCodeInput('');
-                    setUserNameInput('');
-                    setLoginPasswordInput('');
-                  }}
-                  className="text-xs text-[#5A5A40] hover:text-[#484833] underline cursor-pointer"
-                >
-                  {loginMode === 'login' ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* Global Drag & Drop Overlay */}
       {isDragging && (
         <div className="fixed inset-0 bg-[#5A5A40]/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center text-white border-4 border-dashed border-white m-4 rounded-3xl pointer-events-none transition-all">
@@ -929,14 +705,14 @@ zip_limits:
 
           {/* Role Status Badge & Auth Toggle */}
           <div className="flex items-center gap-2">
-            {authState === 'admin' ? (
+            {userRole === 'admin' ? (
               <div className="flex items-center gap-2 bg-amber-50 border border-amber-300 px-3 py-1.5 rounded-full text-xs font-semibold text-amber-900 shadow-xs">
                 <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
                 <span>Роль: <strong>Администратор</strong></span>
                 <button 
-                  onClick={handleFullLogout}
+                  onClick={handleLogoutToUser}
                   className="ml-1 text-xs text-amber-800 hover:text-amber-950 underline cursor-pointer"
-                  title="Выйти из аккаунта"
+                  title="Выйти из прав администратора"
                 >
                   Выйти
                 </button>
@@ -946,12 +722,11 @@ zip_limits:
                 <Users className="w-4 h-4 text-[#8c8c7a] shrink-0" />
                 <span>Роль: <strong>Пользователь</strong></span>
                 <button 
-                  onClick={handleFullLogout}
+                  onClick={() => { setLoginErrorMsg(null); setShowLoginModal(true); }}
                   className="ml-1 px-2.5 py-1 rounded-full bg-[#5A5A40] text-white text-[11px] font-semibold hover:bg-[#484833] transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
-                  title="Выйти из аккаунта"
                 >
-                  <X className="w-3 h-3" />
-                  Выйти
+                  <Lock className="w-3 h-3" />
+                  Войти как Админ
                 </button>
               </div>
             )}
@@ -1019,17 +794,17 @@ zip_limits:
                   </div>
                 </div>
                 <div className="text-3xl font-semibold text-[#5A5A40] font-sans">
-                  {formatBytes(stats?.storage.used_bytes || 0)}
+                  {formatBytes(stats?.storage?.used_bytes || 0)}
                 </div>
                 <div className="text-xs text-[#8c8c7a] mt-1 flex justify-between items-center">
-                  <span>из {formatBytes(stats?.storage.quota_bytes || 107374182400)} квоты</span>
+                  <span>из {formatBytes(stats?.storage?.quota_bytes || 107374182400)} квоты</span>
                   <span className="text-[11px] font-semibold text-[#5A5A40] underline opacity-0 group-hover:opacity-100 transition-opacity">Подробнее &rarr;</span>
                 </div>
                 <div className="w-full h-2.5 bg-[#e2e2d5] rounded-full overflow-hidden mt-4">
                   <div 
                     className="h-full bg-[#5A5A40] rounded-full transition-all duration-500" 
                     style={{ 
-                      width: `${Math.min(100, Math.max(2, ((stats?.storage.used_bytes || 0) / (stats?.storage.quota_bytes || 1)) * 100))}%` 
+                      width: `${Math.min(100, Math.max(2, (((stats?.storage?.used_bytes || 0) / (stats?.storage?.quota_bytes || 1)) * 100)))}%` 
                     }}
                   ></div>
                 </div>
@@ -1050,10 +825,10 @@ zip_limits:
                   </div>
                 </div>
                 <div className="text-3xl font-semibold text-[#5A5A40] font-sans">
-                  {formatBytes(stats?.traffic.total_bytes || 0)}
+                  {formatBytes(stats?.traffic?.total_bytes || 0)}
                 </div>
                 <div className="text-xs text-[#8c8c7a] mt-1 flex justify-between items-center">
-                  <span>Загрузка: {formatBytes(stats?.traffic.upload_bytes || 0)} | Выгрузка: {formatBytes(stats?.traffic.download_bytes || 0)}</span>
+                  <span>Загрузка: {formatBytes(stats?.traffic?.upload_bytes || 0)} | Выгрузка: {formatBytes(stats?.traffic?.download_bytes || 0)}</span>
                   <span className="text-[11px] font-semibold text-[#5A5A40] underline opacity-0 group-hover:opacity-100 transition-opacity">График &rarr;</span>
                 </div>
                 <div className="w-full h-2.5 bg-[#e2e2d5] rounded-full overflow-hidden mt-4">
@@ -1076,7 +851,7 @@ zip_limits:
                   </div>
                 </div>
                 <div className="text-3xl font-semibold text-[#5A5A40] font-sans">
-                  {stats?.active_sessions || sessions.filter(s => !s.revoked).length || 2} подключения
+                  {stats?.active_sessions || safeSessions.filter(s => s && !s.revoked).length || 2} подключения
                 </div>
                 <div className="text-xs text-[#8c8c7a] mt-1 flex justify-between items-center">
                   <span>Сессии устройств с автопродлением</span>
@@ -1248,7 +1023,7 @@ zip_limits:
                                 )}
 
                                 <button 
-                                  onClick={() => handleDeleteFile(file.id)}
+                                  onClick={() => handleDeleteFile(file)}
                                   className="p-1 rounded bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer"
                                   title="Удалить файл"
                                 >
