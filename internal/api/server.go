@@ -199,9 +199,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/files/delete/", s.handleUserDeleteFile)
 	mux.HandleFunc("/api/zip", s.handleZipDownload)
 
-	// Chunked Upload Protocol API
+	// Chunked & Direct Upload Protocol API
 	mux.HandleFunc("/api/uploads", s.handleUploadCreate)
 	mux.HandleFunc("/api/uploads/", s.handleUploadChunk) // Handles HEAD, PATCH, DELETE, POST complete
+	mux.HandleFunc("/api/files/upload/reserve", s.handleAPIUploadReserve)
+	mux.HandleFunc("/api/files/upload/chunk", s.handleAPIUploadChunk)
+	mux.HandleFunc("/api/files/upload/complete", s.handleAPIUploadComplete)
+	mux.HandleFunc("/api/files/upload/direct", s.handleAPIUploadDirect)
 
 	// Admin Dashboard & Pages
 	mux.HandleFunc("/admin/dashboard", s.requireAdmin(s.handleAdminDashboard))
@@ -1928,17 +1932,37 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM files WHERE status = 'ready'").Scan(&filesCount)
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM files WHERE status = 'quarantined'").Scan(&quarantineCount)
 
+	month := traffic.GetCurrentMonth()
+	var uploadCompleted, uploadAborted, downloadCompleted, downloadAborted int64
+	_ = s.db.QueryRow(`
+		SELECT COALESCE(SUM(upload_completed_bytes), 0), COALESCE(SUM(upload_aborted_bytes), 0),
+		       COALESCE(SUM(download_completed_bytes), 0), COALESCE(SUM(download_aborted_bytes), 0)
+		FROM traffic_counters WHERE month = ?
+	`, month).Scan(&uploadCompleted, &uploadAborted, &downloadCompleted, &downloadAborted)
+
+	var activeSessions int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM device_sessions WHERE revoked = 0 AND idle_expires_at > ?", time.Now().UTC()).Scan(&activeSessions)
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"service":          "lares",
-		"version":          "1.24.0",
-		"uptime":           "12d 4h 18m",
-		"active_transfers": 0,
+		"storage": map[string]interface{}{
+			"used_bytes":  usedStorage,
+			"quota_bytes": s.cfg.StorageDefaults.QuotaBytes,
+			"files_count": filesCount,
+		},
+		"traffic": map[string]interface{}{
+			"month":          month,
+			"upload_bytes":   uploadCompleted,
+			"download_bytes": downloadCompleted,
+			"total_bytes":    uploadCompleted + downloadCompleted,
+		},
+		"active_sessions":  activeSessions,
+		"quarantine_count": quarantineCount,
 		"files_count":      filesCount,
 		"storage_used":     usedStorage,
 		"storage_total":    s.cfg.StorageDefaults.QuotaBytes,
 		"max_file_size":    s.cfg.StorageDefaults.MaxFileSize,
-		"ratelimit_status": "норма",
-		"quarantine_count": quarantineCount,
+		"service":          "lares",
+		"version":          "1.24.0",
 	})
 }
 
@@ -2053,12 +2077,17 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		now := time.Now().UTC()
+		expiresAt := now.Add(30 * 24 * time.Hour)
+		adminID := admin.ID
+
 		_, err := s.db.Exec(`
-			INSERT INTO invite_codes (person_id, code_hash, code_prefix, max_activations, activations_used, enabled, created_at)
-			VALUES (?, ?, ?, 5, 0, 1, ?)
-		`, personID, codeHash, prefix, time.Now().UTC())
+			INSERT INTO invite_codes (person_id, code_hash, code_prefix, max_activations, activations_used, enabled, expires_at, created_at, created_by_admin_id)
+			VALUES (?, ?, ?, 5, 0, 1, ?, ?, ?)
+		`, personID, codeHash, prefix, expiresAt, now, adminID)
 
 		if err != nil {
+			log.Printf("[Invite Error] %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create invite"})
 			return
@@ -2066,10 +2095,12 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"code":            code,
+			"invite_code":     code,
 			"max_activations": 5,
 			"activations":     0,
 			"revoked":         false,
-			"created_at":      time.Now().Format(time.RFC3339),
+			"created_at":      now.Format(time.RFC3339),
+			"expires_at":      expiresAt.Format(time.RFC3339),
 		})
 		return
 	}
@@ -2194,4 +2225,440 @@ func (s *Server) validateCSRFToken(r *http.Request, sess *models.DeviceSession) 
 	}
 
 	return subtle.ConstantTimeCompare([]byte(givenToken), []byte(expectedToken)) == 1
+}
+
+func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	var req struct {
+		Filename     string `json:"filename"`
+		DeclaredSize int64  `json:"declared_size"`
+		Size         int64  `json:"size"`
+		ContentType  string `json:"content_type"`
+		ExpiryDays   int    `json:"expiry_days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	size := req.DeclaredSize
+	if size == 0 {
+		size = req.Size
+	}
+	filename := storage.SanitizeFilename(req.Filename)
+	if filename == "" {
+		filename = "unnamed_file"
+	}
+	contentType := req.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	expiryDays := req.ExpiryDays
+	if expiryDays <= 0 {
+		expiryDays = 14
+	}
+
+	sess, person, _ := s.getSession(r)
+	var personID int64
+	if person != nil {
+		personID = person.ID
+	}
+
+	uploadID := auth.GenerateRandomID(16)
+	uploadSecret := auth.GenerateRandomToken(32)
+	uploadSecretHash := auth.HashWithSalt(uploadSecret, s.cfg.Secrets.IPHashSalt)
+	now := time.Now().UTC()
+	resExpires := now.Add(24 * time.Hour)
+
+	var sessID interface{}
+	if sess != nil {
+		sessID = sess.ID
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO uploads (id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes, status, expiry_days, reservation_expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 'reserved', ?, ?, ?)
+	`, uploadID, personID, sessID, uploadSecretHash, filename, size, expiryDays, resExpires, now)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reserve upload"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"upload_id":     uploadID,
+		"upload_secret": uploadSecret,
+		"filename":      filename,
+		"declared_size": size,
+	})
+}
+
+func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	uploadID := r.URL.Query().Get("upload_id")
+	secret := r.URL.Query().Get("secret")
+	if uploadID == "" || secret == "" {
+		secret = r.Header.Get("X-Upload-Secret")
+	}
+
+	var u struct {
+		ID               string
+		PersonID         int64
+		UploadSecretHash string
+		OriginalName     string
+		DeclaredSize     int64
+		ReceivedBytes    int64
+	}
+	err := s.db.QueryRow(`
+		SELECT id, person_id, upload_secret_hash, original_name, declared_size, received_bytes
+		FROM uploads WHERE id = ?
+	`, uploadID).Scan(&u.ID, &u.PersonID, &u.UploadSecretHash, &u.OriginalName, &u.DeclaredSize, &u.ReceivedBytes)
+
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Upload not found"})
+		return
+	}
+
+	if auth.HashWithSalt(secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
+		return
+	}
+
+	f, _, err := s.sm.PreparePartFile(uploadID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to prepare part file"})
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err == nil {
+		_, _ = f.Seek(fi.Size(), 0)
+	}
+
+	written, err := io.Copy(f, r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to write chunk"})
+		return
+	}
+
+	newTotal := fi.Size() + written
+	_, _ = s.db.Exec("UPDATE uploads SET received_bytes = ?, status = 'uploading' WHERE id = ?", newTotal, uploadID)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "ok",
+		"received_bytes": newTotal,
+	})
+}
+
+func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	var req struct {
+		UploadID string `json:"upload_id"`
+		Secret   string `json:"secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	var u struct {
+		ID               string
+		PersonID         int64
+		SessionID        sql.NullInt64
+		UploadSecretHash string
+		OriginalName     string
+		DeclaredSize     int64
+		ReceivedBytes    int64
+		ExpiryDays       int
+	}
+	err := s.db.QueryRow(`
+		SELECT id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes, expiry_days
+		FROM uploads WHERE id = ?
+	`, req.UploadID).Scan(&u.ID, &u.PersonID, &u.SessionID, &u.UploadSecretHash, &u.OriginalName, &u.DeclaredSize, &u.ReceivedBytes, &u.ExpiryDays)
+
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Upload not found"})
+		return
+	}
+
+	if auth.HashWithSalt(req.Secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
+		return
+	}
+
+	fileID := auth.GenerateRandomID(16)
+	finalPath, err := s.sm.FinalizeUpload(req.UploadID, fileID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to finalize upload"})
+		return
+	}
+
+	fi, err := os.Stat(finalPath)
+	actualSize := u.ReceivedBytes
+	if err == nil {
+		actualSize = fi.Size()
+	}
+
+	sess, person, admin := s.getSession(r)
+	uploaderName := "Пользователь Web"
+	if person != nil {
+		uploaderName = person.Label
+	} else if admin != nil || (sess != nil && sess.IsAdmin) {
+		uploaderName = "Администратор"
+	}
+
+	status := models.FileStatusReady
+	flagged := false
+	flagReason := ""
+
+	ext := strings.ToLower(filepath.Ext(u.OriginalName))
+	if strings.HasPrefix(ext, ".") {
+		ext = ext[1:]
+	}
+
+	for _, suspExt := range s.cfg.SuspiciousExtensions {
+		if ext == strings.ToLower(suspExt) {
+			status = models.FileStatusQuarantined
+			flagged = true
+			flagReason = fmt.Sprintf("Подозрительное расширение .%s", ext)
+			break
+		}
+	}
+
+	if !flagged && strings.Count(u.OriginalName, ".") > 1 {
+		parts := strings.Split(strings.ToLower(u.OriginalName), ".")
+		for _, part := range parts[1:] {
+			for _, suspExt := range s.cfg.SuspiciousExtensions {
+				if part == strings.ToLower(suspExt) {
+					status = models.FileStatusQuarantined
+					flagged = true
+					flagReason = "Двойное расширение с исполняемым файлом"
+					break
+				}
+			}
+			if flagged {
+				break
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	var expAt *time.Time
+	if u.ExpiryDays > 0 {
+		t := now.Add(time.Duration(u.ExpiryDays) * 24 * time.Hour)
+		expAt = &t
+	}
+
+	storedRelPath, _ := filepath.Rel(s.cfg.DataDir, finalPath)
+	if storedRelPath == "" {
+		storedRelPath = filepath.Base(finalPath)
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(u.OriginalName))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	var personIDVal interface{}
+	if u.PersonID > 0 {
+		personIDVal = u.PersonID
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO files (id, person_id, session_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, fileID, personIDVal, u.SessionID, uploaderName, u.OriginalName, storedRelPath, actualSize, contentType, status, flagged, flagReason, now, expAt)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file metadata"})
+		return
+	}
+
+	_, _ = s.db.Exec("DELETE FROM uploads WHERE id = ?", req.UploadID)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":             fileID,
+		"original_name":  u.OriginalName,
+		"size":           actualSize,
+		"content_type":   contentType,
+		"status":         status,
+		"flagged":        flagged,
+		"flag_reason":    flagReason,
+		"created_at":     now.Format(time.RFC3339),
+		"uploader_label": uploaderName,
+	})
+}
+
+func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	var filename string
+	var size int64
+	var reader io.Reader
+
+	if err == nil {
+		defer file.Close()
+		filename = header.Filename
+		size = header.Size
+		reader = file
+	} else {
+		filename = r.Header.Get("X-File-Name")
+		if filename != "" {
+			filename, _ = url.QueryUnescape(filename)
+		}
+		if filename == "" {
+			filename = "direct_file"
+		}
+		size = r.ContentLength
+		reader = r.Body
+	}
+
+	filename = storage.SanitizeFilename(filename)
+	fileID := auth.GenerateRandomID(16)
+	finalPath := s.sm.GetShardedPath(fileID)
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0750); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create directory"})
+		return
+	}
+
+	out, err := os.Create(finalPath)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create file"})
+		return
+	}
+	defer out.Close()
+
+	written, err := io.Copy(out, reader)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file"})
+		return
+	}
+
+	if size <= 0 {
+		size = written
+	}
+
+	sess, person, admin := s.getSession(r)
+	uploaderName := "Пользователь Web"
+	var personIDVal interface{}
+	if person != nil {
+		uploaderName = person.Label
+		personIDVal = person.ID
+	} else if admin != nil || (sess != nil && sess.IsAdmin) {
+		uploaderName = "Администратор"
+	}
+
+	status := models.FileStatusReady
+	flagged := false
+	flagReason := ""
+
+	ext := strings.ToLower(filepath.Ext(filename))
+	if strings.HasPrefix(ext, ".") {
+		ext = ext[1:]
+	}
+
+	for _, suspExt := range s.cfg.SuspiciousExtensions {
+		if ext == strings.ToLower(suspExt) {
+			status = models.FileStatusQuarantined
+			flagged = true
+			flagReason = fmt.Sprintf("Подозрительное расширение .%s", ext)
+			break
+		}
+	}
+
+	if !flagged && strings.Count(filename, ".") > 1 {
+		parts := strings.Split(strings.ToLower(filename), ".")
+		for _, part := range parts[1:] {
+			for _, suspExt := range s.cfg.SuspiciousExtensions {
+				if part == strings.ToLower(suspExt) {
+					status = models.FileStatusQuarantined
+					flagged = true
+					flagReason = "Двойное расширение с исполняемым файлом"
+					break
+				}
+			}
+			if flagged {
+				break
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	expAt := now.Add(14 * 24 * time.Hour)
+	storedRelPath, _ := filepath.Rel(s.cfg.DataDir, finalPath)
+	if storedRelPath == "" {
+		storedRelPath = filepath.Base(finalPath)
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(filename))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	var sessID interface{}
+	if sess != nil {
+		sessID = sess.ID
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO files (id, person_id, session_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, fileID, personIDVal, sessID, uploaderName, filename, storedRelPath, size, contentType, status, flagged, flagReason, now, expAt)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file metadata"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":             fileID,
+		"original_name":  filename,
+		"size":           size,
+		"content_type":   contentType,
+		"status":         status,
+		"flagged":        flagged,
+		"flag_reason":    flagReason,
+		"created_at":     now.Format(time.RFC3339),
+		"uploader_label": uploaderName,
+	})
 }

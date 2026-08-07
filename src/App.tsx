@@ -1367,13 +1367,13 @@ sudo systemctl status lares.service`}</pre>
             <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5] space-y-3">
               <div className="flex justify-between items-center text-xs">
                 <span className="font-semibold text-[#5A5A40] uppercase">Занятое пространство</span>
-                <span className="font-bold font-mono text-[#1a1a15]">{formatBytes(stats?.storage.used_bytes || 0)} / {formatBytes(stats?.storage.quota_bytes || 107374182400)}</span>
+                <span className="font-bold font-mono text-[#1a1a15]">{formatBytes(stats?.storage?.used_bytes || (stats as any)?.storage_used || 0)} / {formatBytes(stats?.storage?.quota_bytes || (stats as any)?.storage_total || 107374182400)}</span>
               </div>
 
               <div className="w-full h-3 bg-[#e2e2d5] rounded-full overflow-hidden">
                 <div 
                   className="h-full bg-[#5A5A40] rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, Math.max(3, ((stats?.storage.used_bytes || 0) / (stats?.storage.quota_bytes || 1)) * 100))}%` }}
+                  style={{ width: `${Math.min(100, Math.max(3, (((stats?.storage?.used_bytes || (stats as any)?.storage_used || 0) / (stats?.storage?.quota_bytes || (stats as any)?.storage_total || 1)) * 100)))}%` }}
                 ></div>
               </div>
 
@@ -1432,7 +1432,7 @@ sudo systemctl status lares.service`}</pre>
               </div>
               <div>
                 <h3 className="font-serif text-xl font-semibold text-[#1a1a15]">Сетевой Трафик и Ограничения</h3>
-                <p className="text-xs text-[#8c8c7a]">Учет объемов передачи за текущий месяц ({stats?.traffic.month || '2026-08'})</p>
+                <p className="text-xs text-[#8c8c7a]">Учет объемов передачи за текущий месяц ({stats?.traffic?.month || 'Текущий месяц'})</p>
               </div>
             </div>
 
@@ -1440,11 +1440,11 @@ sudo systemctl status lares.service`}</pre>
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5]">
                 <span className="text-[11px] font-semibold text-[#8c8c7a] uppercase block mb-1">Загружено на сервер</span>
-                <span className="text-xl font-bold font-mono text-[#5A5A40]">{formatBytes(stats?.traffic.upload_bytes || 0)}</span>
+                <span className="text-xl font-bold font-mono text-[#5A5A40]">{formatBytes(stats?.traffic?.upload_bytes || 0)}</span>
               </div>
               <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5]">
                 <span className="text-[11px] font-semibold text-[#8c8c7a] uppercase block mb-1">Скачано клиентами</span>
-                <span className="text-xl font-bold font-mono text-[#5A5A40]">{formatBytes(stats?.traffic.download_bytes || 0)}</span>
+                <span className="text-xl font-bold font-mono text-[#5A5A40]">{formatBytes(stats?.traffic?.download_bytes || 0)}</span>
               </div>
             </div>
 
