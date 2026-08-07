@@ -7,11 +7,12 @@ import { createServer as createViteServer } from 'vite';
 
 const archiver = (archiverModule as any).default || archiverModule;
 
-const PORT = 3000;
+const PORT = 8090;
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const PARTIALS_DIR = path.join(DATA_DIR, 'partials');
 const STATE_FILE = path.join(DATA_DIR, 'lares_state.json');
+const CREDENTIALS_FILE = path.join(DATA_DIR, 'admin_credentials.json');
 
 // Ensure storage directories exist
 [DATA_DIR, UPLOADS_DIR, PARTIALS_DIR].forEach((dir) => {
@@ -19,6 +20,149 @@ const STATE_FILE = path.join(DATA_DIR, 'lares_state.json');
     fs.mkdirSync(dir, { recursive: true });
   }
 });
+
+// --- Admin Credentials & Session Management ---
+
+interface AdminCredentials {
+  username: string;
+  password_hash: string;
+  salt: string;
+  created_at: string;
+}
+
+interface SessionData {
+  id: string;
+  role: string;
+  username: string;
+  created_at: string;
+  expires_at: string;
+}
+
+const activeSessions = new Map<string, SessionData>();
+
+function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
+  const useSalt = salt || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, useSalt, 64).toString('hex');
+  return { hash, salt: useSalt };
+}
+
+function verifyPassword(password: string, storedHash: string, salt: string): boolean {
+  const { hash } = hashPassword(password, salt);
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(storedHash, 'hex'));
+}
+
+function loadAdminCredentials(): AdminCredentials | null {
+  try {
+    if (fs.existsSync(CREDENTIALS_FILE)) {
+      return JSON.parse(fs.readFileSync(CREDENTIALS_FILE, 'utf-8'));
+    }
+  } catch { /* fallthrough */ }
+  return null;
+}
+
+function initAdminCredentials(): void {
+  if (fs.existsSync(CREDENTIALS_FILE)) return;
+  const rawPassword = crypto.randomBytes(12).toString('base64url');
+  const { hash, salt } = hashPassword(rawPassword);
+  const creds: AdminCredentials = {
+    username: 'admin',
+    password_hash: hash,
+    salt,
+    created_at: new Date().toISOString()
+  };
+  fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), { mode: 0o600 });
+  console.log('╔══════════════════════════════════════════════════════════╗');
+  console.log('║  ПЕРВЫЙ ЗАПУСК: Создан администратор                    ║');
+  console.log(`║  Логин:  admin                                          ║`);
+  console.log(`║  Пароль: ${rawPassword.padEnd(46)}║`);
+  console.log('║  СОХРАНИТЕ ПАРОЛЬ! Он больше не будет показан.           ║');
+  console.log('╚══════════════════════════════════════════════════════════╝');
+}
+
+// --- Invite Code Hashing ---
+
+function hashInviteCode(code: string): string {
+  return crypto.createHash('sha256').update(code).digest('hex');
+}
+
+// --- Filename Sanitization ---
+
+function sanitizeFilename(raw: string): string {
+  // Убираем path traversal
+  let name = path.basename(raw);
+  // Убираем null bytes
+  name = name.replace(/\0/g, '');
+  // Убираем управляющие символы
+  name = name.replace(/[\x00-\x1f\x7f]/g, '');
+  // Убираем опасные символы для FS
+  name = name.replace(/[<>:"/\\|?*]/g, '_');
+  // Ограничиваем длину
+  if (name.length > 255) {
+    const ext = path.extname(name);
+    name = name.slice(0, 255 - ext.length) + ext;
+  }
+  // Если после санитизации пусто
+  if (!name || name === '.' || name === '..') {
+    name = 'unnamed_file';
+  }
+  return name;
+}
+
+// --- Rate Limiter ---
+
+class SimpleRateLimiter {
+  private attempts = new Map<string, { count: number; resetAt: number }>();
+
+  check(key: string, maxAttempts: number, windowMs: number): { allowed: boolean; retryAfterSec: number } {
+    const now = Date.now();
+    const entry = this.attempts.get(key);
+
+    if (!entry || now > entry.resetAt) {
+      this.attempts.set(key, { count: 1, resetAt: now + windowMs });
+      return { allowed: true, retryAfterSec: 0 };
+    }
+
+    if (entry.count >= maxAttempts) {
+      const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+      return { allowed: false, retryAfterSec };
+    }
+
+    entry.count++;
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  // Чистка устаревших записей (вызывать периодически)
+  cleanup(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.attempts) {
+      if (now > entry.resetAt) this.attempts.delete(key);
+    }
+  }
+}
+
+const loginLimiter = new SimpleRateLimiter();
+const inviteLimiter = new SimpleRateLimiter();
+
+// Чистка каждые 5 минут
+setInterval(() => {
+  loginLimiter.cleanup();
+  inviteLimiter.cleanup();
+}, 300000);
+
+// --- Safe Inline Types for Downloads ---
+
+const SAFE_INLINE_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'video/mp4', 'video/webm',
+  'audio/mpeg', 'audio/ogg'
+]);
+
+const DANGEROUS_EXTENSIONS = new Set([
+  '.html', '.htm', '.svg', '.xml', '.xsl', '.xslt',
+  '.js', '.mjs', '.css', '.json', '.wasm'
+]);
+
+// --- Data Interfaces ---
 
 interface FileRecord {
   id: string;
@@ -37,7 +181,7 @@ interface FileRecord {
 
 interface UploadReservation {
   id: string;
-  secret: string;
+  secret_hash: string;
   original_name: string;
   declared_size: number;
   received_bytes: number;
@@ -47,7 +191,7 @@ interface UploadReservation {
 
 interface InviteCode {
   id: string;
-  code: string;
+  code_hash: string;
   code_prefix: string;
   enabled: boolean;
   max_activations: number;
@@ -77,6 +221,7 @@ function loadState(): AppState {
   }
 
   // Seed default demo state
+  const demoInviteCode = 'LARE-98A2-4B1C-8812';
   const defaultState: AppState = {
     files: [
       {
@@ -121,7 +266,7 @@ function loadState(): AppState {
     invites: [
       {
         id: 'inv1',
-        code: 'LARE-98A2-4B1C-8812',
+        code_hash: hashInviteCode(demoInviteCode),
         code_prefix: 'LARE',
         enabled: true,
         max_activations: 10,
@@ -174,33 +319,108 @@ function isSuspiciousExtension(filename: string): boolean {
 }
 
 async function startServer() {
+  // Initialize admin credentials on first run (before express app)
+  initAdminCredentials();
+
   const app = express();
 
   app.use(express.json());
+
+  // Security headers middleware
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-XSS-Protection', '0');  // отключаем устаревший XSS-фильтр
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+    next();
+  });
+
+  // CSRF protection middleware
+  app.use((req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      return next();
+    }
+    const origin = req.headers['origin'];
+    const host = req.headers['host'];
+    // Разрешаем API-вызовы с правильным Content-Type (API clients)
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('application/json') || contentType.includes('application/octet-stream')) {
+      return next();
+    }
+    // Для form submissions проверяем origin
+    if (origin && host && !origin.includes(host)) {
+      res.status(403).json({ error: 'CSRF: недопустимый источник запроса' });
+      return;
+    }
+    next();
+  });
+
+  // --- Session-based Auth ---
+
+  function getSession(req: express.Request): SessionData | null {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || typeof authHeader !== 'string') return null;
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+    const session = activeSessions.get(token);
+    if (!session) return null;
+    if (new Date(session.expires_at) < new Date()) {
+      activeSessions.delete(token);
+      return null;
+    }
+    return session;
+  }
+
+  const isAdmin = (req: express.Request): boolean => {
+    const session = getSession(req);
+    return session !== null && session.role === 'admin';
+  };
 
   // --- API Routes ---
 
   // Auth Login Endpoint
   app.post('/api/auth/login', (req, res) => {
-    const { password } = req.body;
-    // Default admin credentials check (password: "admin" or "admin123")
-    if (password === 'admin' || password === 'admin123' || password === '123456') {
-      res.json({
-        role: 'admin',
-        username: 'Администратор',
-        token: 'admin-session-token-' + crypto.randomBytes(8).toString('hex')
-      });
-    } else {
-      res.status(401).json({ error: 'Неверный пароль администратора. Для тестового входа используйте: admin' });
+    const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
+    const { allowed, retryAfterSec } = loginLimiter.check(clientIP, 5, 15 * 60 * 1000);
+    if (!allowed) {
+      res.setHeader('Retry-After', String(retryAfterSec));
+      res.status(429).json({ error: `Слишком много попыток. Повторите через ${retryAfterSec} сек.` });
+      return;
     }
-  });
 
-  // Admin Verification Helper
-  const isAdmin = (req: express.Request): boolean => {
-    const roleHeader = req.headers['x-user-role'];
-    const authHeader = req.headers['authorization'];
-    return roleHeader === 'admin' || (typeof authHeader === 'string' && authHeader.includes('admin'));
-  };
+    const { password } = req.body;
+    if (!password || typeof password !== 'string') {
+      res.status(400).json({ error: 'Пароль обязателен' });
+      return;
+    }
+    const creds = loadAdminCredentials();
+    if (!creds) {
+      res.status(500).json({ error: 'Ошибка конфигурации сервера' });
+      return;
+    }
+    if (!verifyPassword(password, creds.password_hash, creds.salt)) {
+      // НЕ сообщай, что именно неверно (логин или пароль)
+      res.status(401).json({ error: 'Неверные учётные данные' });
+      return;
+    }
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const sessionId = crypto.randomBytes(8).toString('hex');
+    activeSessions.set(sessionToken, {
+      id: sessionId,
+      role: 'admin',
+      username: creds.username,
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 12 * 3600000).toISOString()
+    });
+    res.json({
+      role: 'admin',
+      username: creds.username,
+      token: sessionToken
+    });
+  });
 
   // Healthcheck
   app.get('/api/health', (req, res) => {
@@ -227,7 +447,7 @@ async function startServer() {
         download_bytes: state.stats.total_download_bytes,
         total_bytes: state.stats.total_upload_bytes + state.stats.total_download_bytes,
       },
-      active_sessions: 12,
+      active_sessions: activeSessions.size,
       recent_files: state.files.slice(0, 10),
     });
   });
@@ -246,13 +466,15 @@ async function startServer() {
       return;
     }
 
+    const safeName = sanitizeFilename(filename);
     const uploadId = crypto.randomBytes(16).toString('hex');
     const secret = crypto.randomBytes(16).toString('hex');
+    const secretHash = crypto.createHash('sha256').update(secret).digest('hex');
 
     const reservation: UploadReservation = {
       id: uploadId,
-      secret,
-      original_name: filename,
+      secret_hash: secretHash,
+      original_name: safeName,
       declared_size: Number(declared_size),
       received_bytes: 0,
       expiry_days: expiry_days || 14,
@@ -275,7 +497,8 @@ async function startServer() {
     const secret = req.query.secret as string;
 
     const reservation = state.reservations[uploadId];
-    if (!reservation || reservation.secret !== secret) {
+    const secretHash = secret ? crypto.createHash('sha256').update(secret).digest('hex') : '';
+    if (!reservation || reservation.secret_hash !== secretHash) {
       res.status(400).json({ error: 'Неверный или истекший идентификатор загрузки' });
       return;
     }
@@ -311,7 +534,8 @@ async function startServer() {
     const { upload_id, secret } = req.body;
     const reservation = state.reservations[upload_id];
 
-    if (!reservation || reservation.secret !== secret) {
+    const secretHash = secret ? crypto.createHash('sha256').update(secret).digest('hex') : '';
+    if (!reservation || reservation.secret_hash !== secretHash) {
       res.status(400).json({ error: 'Неверный идентификатор или секрет загрузки' });
       return;
     }
@@ -333,7 +557,9 @@ async function startServer() {
       actualSize = fs.statSync(finalPath).size;
     }
 
-    const userLabel = (req.headers['x-uploader-label'] as string) || (isAdmin(req) ? 'Администратор' : 'Пользователь Web');
+    // Get uploader label from session, not from client header
+    const session = getSession(req);
+    const userLabel = session ? session.username : 'Пользователь Web';
 
     const suspicious = isSuspiciousExtension(reservation.original_name);
     const fileRecord: FileRecord = {
@@ -370,8 +596,9 @@ async function startServer() {
 
     const filePath = path.join(UPLOADS_DIR, fileRecord.stored_path);
     if (!fs.existsSync(filePath)) {
-      res.setHeader('Content-Type', fileRecord.content_type || 'application/octet-stream');
+      res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileRecord.original_name)}"`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.send(`Содержимое файла ${fileRecord.original_name}`);
       return;
     }
@@ -380,11 +607,16 @@ async function startServer() {
     saveState(state);
 
     const inline = req.query.inline === 'true';
-    res.setHeader('Content-Type', fileRecord.content_type || 'application/octet-stream');
-    res.setHeader(
-      'Content-Disposition',
-      `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(fileRecord.original_name)}"`
+    const ext = path.extname(fileRecord.original_name).toLowerCase();
+    const canInline = inline
+      && SAFE_INLINE_TYPES.has(fileRecord.content_type)
+      && !DANGEROUS_EXTENSIONS.has(ext);
+
+    res.setHeader('Content-Type', canInline ? fileRecord.content_type : 'application/octet-stream');
+    res.setHeader('Content-Disposition',
+      `${canInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(fileRecord.original_name)}"`
     );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     fs.createReadStream(filePath).pipe(res);
   });
@@ -428,11 +660,13 @@ async function startServer() {
     }
 
     const targetFile = state.files[index];
-    const userRole = (req.headers['x-user-role'] as string) || 'user';
-    const userLabel = (req.headers['x-uploader-label'] as string) || 'Пользователь Web';
+    // Use session-based auth instead of trusting client headers
+    const session = getSession(req);
+    const userIsAdmin = isAdmin(req);
+    const userLabel = session ? session.username : 'Пользователь Web';
 
     // Users can only delete their own uploaded files. Admins can delete any file.
-    if (userRole !== 'admin') {
+    if (!userIsAdmin) {
       if (targetFile.uploader_label === 'Администратор' || (targetFile.uploader_label && targetFile.uploader_label !== userLabel && targetFile.uploader_label !== 'Пользователь Web')) {
         res.status(403).json({ error: 'Пользователям запрещено удалять файлы администратора или других пользователей. Обычный пользователь может удалять только свои файлы.' });
         return;
@@ -451,8 +685,17 @@ async function startServer() {
 
   // Auth: Activate Invite Code
   app.post('/api/auth/invite/activate', (req, res) => {
+    const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
+    const { allowed, retryAfterSec } = inviteLimiter.check(clientIP, 5, 15 * 60 * 1000);
+    if (!allowed) {
+      res.setHeader('Retry-After', String(retryAfterSec));
+      res.status(429).json({ error: `Слишком много попыток. Повторите через ${retryAfterSec} сек.` });
+      return;
+    }
+
     const { code, device_name } = req.body;
-    const invite = state.invites.find((i) => i.code === code && i.enabled);
+    const codeHash = hashInviteCode(code);
+    const invite = state.invites.find((i) => i.code_hash === codeHash && i.enabled);
 
     if (!invite || invite.activations_used >= invite.max_activations) {
       res.status(401).json({ error: 'Недействительный или исчерпанный код инвайта' });
@@ -488,7 +731,7 @@ async function startServer() {
 
     const newInvite: InviteCode = {
       id: crypto.randomBytes(8).toString('hex'),
-      code: rawCode,
+      code_hash: hashInviteCode(rawCode),
       code_prefix: 'LARE',
       enabled: true,
       max_activations: Number(max_activations) || 5,
@@ -571,7 +814,7 @@ async function startServer() {
 
   // Direct File Upload Endpoint
   app.post('/api/files/upload/direct', (req, res) => {
-    let filename = req.headers['x-file-name'] ? decodeURIComponent(req.headers['x-file-name'] as string) : 'uploaded_file.dat';
+    let filename = req.headers['x-file-name'] ? sanitizeFilename(decodeURIComponent(req.headers['x-file-name'] as string)) : 'uploaded_file.dat';
     const fileId = crypto.randomBytes(16).toString('hex');
     const ext = path.extname(filename);
     const storedFileName = `${fileId}${ext || '.bin'}`;
@@ -583,7 +826,9 @@ async function startServer() {
     writeStream.on('finish', () => {
       const stats = fs.statSync(finalPath);
       const suspicious = isSuspiciousExtension(filename);
-      const userLabel = (req.headers['x-uploader-label'] as string) || (isAdmin(req) ? 'Администратор' : 'Пользователь Web');
+      // Get uploader label from session, not from client header
+      const session = getSession(req);
+      const userLabel = session ? session.username : 'Пользователь Web';
 
       const fileRecord: FileRecord = {
         id: fileId,
@@ -611,6 +856,12 @@ async function startServer() {
     });
   });
 
+  // robots.txt — before Vite middleware
+  app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.send('User-agent: *\nDisallow: /\n');
+  });
+
   // --- Vite Middleware for Dev or Dist Serving for Production ---
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -626,8 +877,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Lares full-stack service running on http://localhost:${PORT}`);
+  const server = app.listen(PORT, '127.0.0.1', () => {
+    console.log(`Lares listening on http://127.0.0.1:${PORT}`);
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received. Shutting down...');
+    server.close(() => { process.exit(0); });
+  });
+  process.on('SIGINT', () => {
+    console.log('SIGINT received. Shutting down...');
+    server.close(() => { process.exit(0); });
   });
 }
 

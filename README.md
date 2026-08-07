@@ -147,27 +147,27 @@ sudo systemctl reload caddy
 
 ```text
 .
-├── main.go               # Точка входа Go-сервера
-├── config.yaml.example   # Шаблон конфигурационного файла
-├── lares.service         # Юнит-файл systemd для автозапуска
-├── Caddyfile.example     # Пример конфигурации прокси Caddy
-├── LICENSE               # Текст лицензии GNU General Public License v3.0
-├── README.md             # Документация проекта
-├── internal/
-│   ├── audit/            # Аудит действий и хэширование IP
-│   ├── auth/             # Хэширование пассфраз и 2FA TOTP
-│   ├── cleanup/          # Фоновые процессы очистки истекших файлов
-│   ├── config/           # Парсер YAML-конфигурации
-│   ├── db/               # Инициализация и миграции SQLite
-│   ├── download/         # Сервис отдачи файлов с поддержкой докачки
-│   ├── ratelimit/        # Защита от брутфорса и лимиты запросов
-│   ├── securitylog/      # Логирование событий безопасности
-│   ├── speedlimit/       # Ограничение скорости сети (Token Bucket)
-│   ├── storage/          # Управление файловой системой и квотами
-│   ├── traffic/          # Учет помесячного входящего/исходящего трафика
-│   ├── upload/           # Прием файлов и проверка на карантин
-│   └── zip/              # Динамический ZIP-стриминг
-└── src/                  # React Дашборд и визуальный веб-интерфейс
+├── main.go               # Go-сервер (заглушка, основная логика в server.ts)
+├── server.ts             # Основной Node.js/Express сервер
+├── src/
+│   ├── App.tsx           # React SPA — основной интерфейс
+│   ├── components/       # React-компоненты
+│   ├── index.css         # Стили для React
+│   └── main.tsx          # Точка входа React
+├── web/
+│   └── static/
+│       ├── app.js        # Vanilla JS клиент (chunked upload)
+│       └── app.css       # CSS-стили
+├── config.yaml.example   # Шаблон конфигурации
+├── lares.service         # Systemd unit
+├── Caddyfile.example     # Пример Caddy reverse proxy
+├── fail2ban/
+│   ├── lares.conf        # Fail2ban filter
+│   └── jail.local.snippet
+├── package.json          # Node.js зависимости
+├── vite.config.ts        # Vite конфигурация
+├── index.html            # HTML entry point
+└── README.md             # Документация
 ```
 
 ---

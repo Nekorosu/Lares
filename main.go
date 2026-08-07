@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,10 +11,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -47,26 +50,26 @@ type InviteRecord struct {
 }
 
 type SessionRecord struct {
-	ID        int       `json:"id"`
-	Device    string    `json:"device"`
-	IP        string    `json:"ip"`
-	LastSeen  time.Time `json:"last_seen"`
-	Status    string    `json:"status"`
-	Revoked   bool      `json:"revoked"`
+	ID       int       `json:"id"`
+	Device   string    `json:"device"`
+	IP       string    `json:"ip"`
+	LastSeen time.Time `json:"last_seen"`
+	Status   string    `json:"status"`
+	Revoked  bool      `json:"revoked"`
 }
 
 type ServerState struct {
-	mu        sync.RWMutex
-	Files     []FileRecord     `json:"files"`
-	Invites   []InviteRecord   `json:"invites"`
-	Sessions  []SessionRecord  `json:"sessions"`
-	Config    Config           `json:"config"`
+	mu       sync.RWMutex
+	Files    []FileRecord    `json:"files"`
+	Invites  []InviteRecord  `json:"invites"`
+	Sessions []SessionRecord `json:"sessions"`
+	Config   Config          `json:"config"`
 }
 
 var state = ServerState{
 	Config: Config{
-		Port:         3000,
-		Host:         "0.0.0.0",
+		Port:         8090,
+		Host:         "127.0.0.1",
 		UploadDir:    "./data/uploads",
 		MaxFileSize:  5368709120,  // 5 GB
 		StorageQuota: 53687091200, // 50 GB
@@ -114,9 +117,9 @@ func randomHex(n int) string {
 }
 
 func isAdmin(r *http.Request) bool {
-	roleHeader := r.Header.Get("x-user-role")
-	authHeader := r.Header.Get("Authorization")
-	return roleHeader == "admin" || strings.Contains(authHeader, "admin")
+	// Go server is a stub; real auth is in Node.js server
+	// Reject all admin requests in the Go stub
+	return false
 }
 
 func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
@@ -135,7 +138,7 @@ func main() {
 	flag.StringVar(&configPath, "c", "/etc/lares/config.yaml", "path to config file (shorthand)")
 	flag.Parse()
 
-	listenAddr := "0.0.0.0:8090"
+	listenAddr := "127.0.0.1:8090"
 
 	// Attempt to read listen address from config file if present
 	if configPath != "" {
@@ -161,25 +164,13 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Auth Login
+	// Auth Login — Go server is a stub; auth handled by Node.js
 	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
 			return
 		}
-		var req struct {
-			Password string `json:"password"`
-		}
-		json.NewDecoder(r.Body).Decode(&req)
-		if req.Password == "admin" || req.Password == "admin123" || req.Password == "123456" {
-			jsonResponse(w, http.StatusOK, map[string]string{
-				"role":     "admin",
-				"username": "Администратор",
-				"token":    "admin-session-token-" + randomHex(8),
-			})
-		} else {
-			errorResponse(w, http.StatusUnauthorized, "Неверный пароль администратора. Используйте: admin")
-		}
+		errorResponse(w, http.StatusNotImplemented, "Auth handled by Node.js server")
 	})
 
 	// Health
@@ -236,7 +227,14 @@ func main() {
 		defer file.Close()
 
 		fileID := "file-" + randomHex(6)
-		storedPath := fileID + "_" + filepath.Base(header.Filename)
+		baseName := filepath.Base(header.Filename)
+		if baseName == "" || baseName == "." || baseName == ".." {
+			baseName = "unnamed_file"
+		}
+		if len(baseName) > 255 {
+			baseName = baseName[:255]
+		}
+		storedPath := fileID + "_" + baseName
 		dstPath := filepath.Join(uploadDir, storedPath)
 
 		out, err := os.Create(dstPath)
@@ -252,14 +250,8 @@ func main() {
 			return
 		}
 
-		userLabel := r.Header.Get("x-uploader-label")
-		if userLabel == "" {
-			if isAdmin(r) {
-				userLabel = "Администратор"
-			} else {
-				userLabel = "Пользователь Web"
-			}
-		}
+		// Do not trust client-supplied labels; use a default
+		userLabel := "Пользователь Web"
 
 		record := FileRecord{
 			ID:            fileID,
@@ -287,8 +279,9 @@ func main() {
 			return
 		}
 		fileID := strings.TrimPrefix(r.URL.Path, "/api/files/delete/")
-		userRole := r.Header.Get("x-user-role")
-		userLabel := r.Header.Get("x-uploader-label")
+		// Go stub: isAdmin always returns false, so treat as regular user
+		userRole := "user"
+		userLabel := "Пользователь Web"
 
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -321,18 +314,22 @@ func main() {
 	// Admin Invites
 	mux.HandleFunc("/api/admin/invites", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
-			errorResponse(w, http.StatusForbidden, "Доступ запрещен. Управление инвайтами доступно только администратору.")
+			errorResponse(w, http.StatusForbidden, "Доступ запрещен")
 			return
 		}
-		state.mu.RLock()
-		defer state.mu.RUnlock()
-
 		if r.Method == http.MethodGet {
-			jsonResponse(w, http.StatusOK, state.Invites)
+			state.mu.RLock()
+			invitesCopy := make([]InviteRecord, len(state.Invites))
+			copy(invitesCopy, state.Invites)
+			state.mu.RUnlock()
+			jsonResponse(w, http.StatusOK, invitesCopy)
 			return
 		}
 		if r.Method == http.MethodPost {
-			code := fmt.Sprintf("LARE-%s-%s-%s", strings.ToUpper(randomHex(2)), strings.ToUpper(randomHex(2)), strings.ToUpper(randomHex(2)))
+			code := fmt.Sprintf("LARE-%s-%s-%s",
+				strings.ToUpper(randomHex(2)),
+				strings.ToUpper(randomHex(2)),
+				strings.ToUpper(randomHex(2)))
 			inv := InviteRecord{
 				Code:           code,
 				CreatedAt:      time.Now(),
@@ -340,14 +337,13 @@ func main() {
 				Activations:    0,
 				Revoked:        false,
 			}
-			state.mu.RUnlock()
 			state.mu.Lock()
 			state.Invites = append([]InviteRecord{inv}, state.Invites...)
 			state.mu.Unlock()
-			state.mu.RLock()
 			jsonResponse(w, http.StatusOK, inv)
 			return
 		}
+		errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
 	})
 
 	// Admin Quarantine Approve
@@ -412,8 +408,27 @@ func main() {
 	fs := http.FileServer(http.Dir("./dist"))
 	mux.Handle("/", fs)
 
-	fmt.Printf("Lares Go Server listening on %s\n", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("Server error: %v", err)
+	srv := &http.Server{
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 300 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		fmt.Printf("Lares Go Server listening on %s\n", listenAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	<-quit
+	fmt.Println("Shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
 }

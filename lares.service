@@ -1,7 +1,8 @@
 [Unit]
 Description=Lares Self-Hosted File Exchange Service
 After=network.target
-StartLimitIntervalSec=0
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -9,14 +10,30 @@ User=lares
 Group=lares
 ExecStart=/usr/local/bin/lares -config /etc/lares/config.yaml
 Restart=on-failure
-RestartSec=3s
+RestartSec=5s
 WorkingDirectory=/srv/media/fileshare
 
-# Hardening attributes
+# Hardening
 NoNewPrivileges=true
-ProtectSystem=full
+ProtectSystem=strict
 PrivateTmp=true
-ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/lares /etc/lares
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/lares
+ReadOnlyPaths=/etc/lares
+
+# Limits
+LimitNOFILE=65536
+LimitNPROC=512
 
 [Install]
 WantedBy=multi-user.target
