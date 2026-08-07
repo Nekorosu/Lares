@@ -344,14 +344,12 @@ async function startServer() {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       return next();
     }
-    const origin = req.headers['origin'];
-    const host = req.headers['host'];
-    // Разрешаем API-вызовы с правильным Content-Type (API clients)
-    const contentType = req.headers['content-type'] || '';
-    if (contentType.includes('application/json') || contentType.includes('application/octet-stream')) {
+    const authHeader = req.headers['authorization'];
+    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
       return next();
     }
-    // Для form submissions проверяем origin
+    const origin = req.headers['origin'];
+    const host = req.headers['host'];
     if (origin && host && !origin.includes(host)) {
       res.status(403).json({ error: 'CSRF: недопустимый источник запроса' });
       return;
@@ -391,7 +389,7 @@ async function startServer() {
       return;
     }
 
-    const { password } = req.body;
+    const { username, password } = req.body;
     if (!password || typeof password !== 'string') {
       res.status(400).json({ error: 'Пароль обязателен' });
       return;
@@ -401,8 +399,11 @@ async function startServer() {
       res.status(500).json({ error: 'Ошибка конфигурации сервера' });
       return;
     }
+    if (username && typeof username === 'string' && username !== creds.username) {
+      res.status(401).json({ error: 'Неверные учётные данные' });
+      return;
+    }
     if (!verifyPassword(password, creds.password_hash, creds.salt)) {
-      // НЕ сообщай, что именно неверно (логин или пароль)
       res.status(401).json({ error: 'Неверные учётные данные' });
       return;
     }
@@ -420,6 +421,16 @@ async function startServer() {
       username: creds.username,
       token: sessionToken
     });
+  });
+
+  // Auth Me Endpoint
+  app.get('/api/auth/me', (req, res) => {
+    const session = getSession(req);
+    if (!session) {
+      res.json({ authenticated: false, role: 'user' });
+      return;
+    }
+    res.json({ authenticated: true, role: session.role, username: session.username });
   });
 
   // Healthcheck
@@ -603,9 +614,6 @@ async function startServer() {
       return;
     }
 
-    state.stats.total_download_bytes += fileRecord.size;
-    saveState(state);
-
     const inline = req.query.inline === 'true';
     const ext = path.extname(fileRecord.original_name).toLowerCase();
     const canInline = inline
@@ -617,6 +625,11 @@ async function startServer() {
       `${canInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(fileRecord.original_name)}"`
     );
     res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    res.on('finish', () => {
+      state.stats.total_download_bytes += fileRecord.size;
+      saveState(state);
+    });
 
     fs.createReadStream(filePath).pipe(res);
   });

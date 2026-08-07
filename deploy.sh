@@ -7,10 +7,10 @@ echo "🔨 Сборка frontend части..."
 npm run build
 echo "⚙️ Компиляция backend части..."
 go mod tidy
-go build -o lares main.go
+go build -o homeshare ./cmd/homeshare
 echo "📦 Копирование исполняемого файла в системную директорию..."
 sudo systemctl stop lares.service
-sudo cp lares /usr/local/bin/
+sudo cp homeshare /usr/local/bin/homeshare
 echo "🔄 Перезапуск сервиса lares..."
 sudo systemctl restart lares.service
 echo "✅ Статус сервиса lares:"

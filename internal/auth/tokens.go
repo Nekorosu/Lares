@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,8 +16,9 @@ func HashString(input string) string {
 }
 
 func HashWithSalt(input, salt string) string {
-	h := sha256.Sum256([]byte(input + salt))
-	return hex.EncodeToString(h[:])
+	mac := hmac.New(sha256.New, []byte(salt))
+	mac.Write([]byte(input))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func GenerateRandomToken(bytesLen int) string {

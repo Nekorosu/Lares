@@ -37,8 +37,8 @@ func ValidateTOTP(secret, passcode string) bool {
 	now := time.Now().Unix()
 	step := int64(30)
 
-	// Check current time step and +/- 5 window for clock drift tolerance
-	for _, offset := range []int64{-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5} {
+	// Check current time step and +/- 2 window for clock drift tolerance
+	for _, offset := range []int64{-2, -1, 0, 1, 2} {
 		t := (now / step) + offset
 		if generateCode(key, t) == passcode {
 			return true

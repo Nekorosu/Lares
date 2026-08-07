@@ -10,9 +10,9 @@ security_log: "/var/log/homeshare/security.log"
 
 local_cidr: "192.168.32.0/24"
 
-secrets:
-  session_secret: "AUTO_GENERATED_SECRET_KEY_CHANGE_IN_PRODUCTION"
-  ip_hash_salt: "AUTO_GENERATED_IP_SALT_CHANGE_IN_PRODUCTION"
+# secrets:
+#   session_secret: "GENERATE_YOUR_OWN_SECRET_KEY"
+#   ip_hash_salt: "GENERATE_YOUR_OWN_IP_HASH_SALT"
 
 storage_defaults:
   quota_bytes: 107374182400 # 100 GB

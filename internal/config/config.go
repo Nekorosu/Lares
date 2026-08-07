@@ -87,10 +87,10 @@ func DefaultConfig() *Config {
 			IPHashSalt:    generateRandomSecret(32),
 		},
 		StorageDefaults: StorageDefaults{
-			QuotaBytes:           100 * 1024 * 1024 * 1024, // 100 GB
-			MonthlyUploadLimit:   200 * 1024 * 1024 * 1024, // 200 GB
-			MonthlyDownloadLimit: 300 * 1024 * 1024 * 1024, // 300 GB
-			MaxFileSize:          50 * 1024 * 1024 * 1024,  // 50 GB
+			QuotaBytes:           int64(100) * 1024 * 1024 * 1024, // 100 GB
+			MonthlyUploadLimit:   int64(200) * 1024 * 1024 * 1024, // 200 GB
+			MonthlyDownloadLimit: int64(300) * 1024 * 1024 * 1024, // 300 GB
+			MaxFileSize:          int64(50) * 1024 * 1024 * 1024,  // 50 GB
 			MaxConcurrentUploads: 1,
 			DefaultExpiryDays:    14,
 			AllowUserKeepForever: false,
@@ -147,8 +147,26 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// Ensure essential directories are created or configured
+	// Ensure dummy example secrets are replaced with auto-generated secrets
+	if cfg.Secrets.SessionSecret == "" || cfg.Secrets.SessionSecret == "AUTO_GENERATED_SECRET_KEY_CHANGE_IN_PRODUCTION" {
+		cfg.Secrets.SessionSecret = generateRandomSecret(32)
+	}
+	if cfg.Secrets.IPHashSalt == "" || cfg.Secrets.IPHashSalt == "AUTO_GENERATED_IP_SALT_CHANGE_IN_PRODUCTION" {
+		cfg.Secrets.IPHashSalt = generateRandomSecret(32)
+	}
+
 	return cfg, nil
+}
+
+func SaveConfig(cfg *Config, path string) error {
+	if path == "" {
+		path = "config.yaml"
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 func generateRandomSecret(length int) string {

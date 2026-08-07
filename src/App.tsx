@@ -89,14 +89,14 @@ export default function App() {
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
 
   // Role & Authentication State
-  const [userRole, setUserRole] = useState<'user' | 'admin'>(() => {
-    return (localStorage.getItem('lares_user_role') as 'user' | 'admin') || 'user';
-  });
+  const [userRole, setUserRole] = useState<'user' | 'admin'>('user');
   const [adminToken, setAdminToken] = useState<string | null>(() => {
     return localStorage.getItem('lares_admin_token') || null;
   });
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
-  const [loginPasswordInput, setLoginPasswordInput] = useState<string>('admin');
+  const [loginUsernameInput, setLoginUsernameInput] = useState<string>('admin');
+  const [loginPasswordInput, setLoginPasswordInput] = useState<string>('');
+  const [loginTotpInput, setLoginTotpInput] = useState<string>('');
   const [loginErrorMsg, setLoginErrorMsg] = useState<string | null>(null);
 
   // Live Data State
@@ -141,8 +141,6 @@ export default function App() {
   // Build role headers
   const getAuthHeaders = (customHeaders?: Record<string, string>) => {
     const headers: Record<string, string> = {
-      'x-user-role': userRole,
-      'x-uploader-label': userRole === 'admin' ? 'Администратор' : 'Пользователь Web',
       ...customHeaders,
     };
     if (adminToken) {
@@ -156,6 +154,14 @@ export default function App() {
     setLoading(true);
     const reqHeaders = getAuthHeaders();
     try {
+      const resMe = await fetch('/api/auth/me', { headers: reqHeaders }).catch(() => null);
+      if (resMe && resMe.ok) {
+        const meData = await resMe.json().catch(() => null);
+        if (meData && meData.role) {
+          setUserRole(meData.role);
+        }
+      }
+
       const [resStats, resFiles, resInvites, resSessions] = await Promise.all([
         fetch('/api/stats', { headers: reqHeaders }).catch(() => null),
         fetch('/api/files', { headers: reqHeaders }).catch(() => null),
@@ -200,20 +206,26 @@ export default function App() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: loginPasswordInput })
+        body: JSON.stringify({
+          username: loginUsernameInput,
+          password: loginPasswordInput,
+          totp_code: loginTotpInput,
+        })
       });
       const data = await res.json();
       if (res.ok) {
         setUserRole('admin');
         setAdminToken(data.token);
-        localStorage.setItem('lares_user_role', 'admin');
-        localStorage.setItem('lares_admin_token', data.token);
+        if (data.token) {
+          localStorage.setItem('lares_admin_token', data.token);
+        }
         setShowLoginModal(false);
         setLoginPasswordInput('');
+        setLoginTotpInput('');
         // Re-fetch data with new role
         setTimeout(() => refreshData(), 100);
       } else {
-        setLoginErrorMsg(data.error || 'Неверный пароль администратора');
+        setLoginErrorMsg(data.error || 'Неверное имя пользователя, пароль или TOTP-код');
       }
     } catch (err) {
       setLoginErrorMsg('Ошибка соединения с сервером');
@@ -224,7 +236,6 @@ export default function App() {
   const handleLogoutToUser = () => {
     setUserRole('user');
     setAdminToken(null);
-    localStorage.setItem('lares_user_role', 'user');
     localStorage.removeItem('lares_admin_token');
     if (activeTab === 'config') {
       setActiveTab('dashboard');
@@ -1723,6 +1734,20 @@ sudo systemctl status lares.service`}</pre>
             <form onSubmit={handleAdminLogin} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
+                  Имя пользователя
+                </label>
+                <input 
+                  type="text"
+                  value={loginUsernameInput}
+                  onChange={(e) => setLoginUsernameInput(e.target.value)}
+                  placeholder="admin"
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
                   Пароль администратора
                 </label>
                 <input 
@@ -1731,12 +1756,21 @@ sudo systemctl status lares.service`}</pre>
                   onChange={(e) => setLoginPasswordInput(e.target.value)}
                   placeholder="Введите пароль..."
                   className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9]"
-                  autoFocus
                 />
-                <p className="text-[11px] text-[#8c8c7a] mt-1.5 flex items-center gap-1">
-                  <span>Пароль по умолчанию для теста:</span>
-                  <code className="bg-[#f0f0e0] px-1.5 py-0.5 rounded text-xs font-mono font-bold text-[#5A5A40]">admin</code>
-                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1.5">
+                  Код TOTP (2FA)
+                </label>
+                <input 
+                  type="text"
+                  value={loginTotpInput}
+                  onChange={(e) => setLoginTotpInput(e.target.value)}
+                  placeholder="6-значный код (например, 123456)"
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#e2e2d5] text-sm focus:outline-none focus:border-[#5A5A40] bg-[#fcfcf9] font-mono"
+                  maxLength={6}
+                />
               </div>
 
               {loginErrorMsg && (

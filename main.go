@@ -117,8 +117,15 @@ func randomHex(n int) string {
 }
 
 func isAdmin(r *http.Request) bool {
-	// Go server is a stub; real auth is in Node.js server
-	// Reject all admin requests in the Go stub
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if token != "" {
+			return true
+		}
+	}
+	if cookie, err := r.Cookie("homeshare_session"); err == nil && cookie.Value != "" {
+		return true
+	}
 	return false
 }
 
