@@ -2068,17 +2068,7 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 		prefix := auth.FormatCodePrefix(code)
 		codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
 
-		var personID int64
-		_ = s.db.QueryRow("SELECT id FROM people WHERE enabled = 1 ORDER BY id ASC LIMIT 1").Scan(&personID)
-		if personID == 0 {
-			res, err := s.db.Exec(`
-				INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, created_at)
-				VALUES (?, '', 1, ?, ?, ?, ?, 1, ?)
-			`, "Standard User", s.cfg.StorageDefaults.QuotaBytes, s.cfg.StorageDefaults.MonthlyUploadLimit, s.cfg.StorageDefaults.MonthlyDownloadLimit, s.cfg.StorageDefaults.MaxFileSize, time.Now().UTC())
-			if err == nil {
-				personID, _ = res.LastInsertId()
-			}
-		}
+		personID := s.getDefaultPersonID()
 
 		now := time.Now().UTC()
 		expiresAt := now.Add(30 * 24 * time.Hour)
@@ -2230,6 +2220,24 @@ func (s *Server) validateCSRFToken(r *http.Request, sess *models.DeviceSession) 
 	return subtle.ConstantTimeCompare([]byte(givenToken), []byte(expectedToken)) == 1
 }
 
+func (s *Server) getDefaultPersonID() int64 {
+	var personID int64
+	_ = s.db.QueryRow("SELECT id FROM people WHERE enabled = 1 ORDER BY id ASC LIMIT 1").Scan(&personID)
+	if personID == 0 {
+		res, err := s.db.Exec(`
+			INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, created_at)
+			VALUES (?, '', 1, ?, ?, ?, ?, 1, ?)
+		`, "Standard User", s.cfg.StorageDefaults.QuotaBytes, s.cfg.StorageDefaults.MonthlyUploadLimit, s.cfg.StorageDefaults.MonthlyDownloadLimit, s.cfg.StorageDefaults.MaxFileSize, time.Now().UTC())
+		if err == nil {
+			personID, _ = res.LastInsertId()
+		}
+	}
+	if personID == 0 {
+		personID = 1
+	}
+	return personID
+}
+
 func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost {
@@ -2272,6 +2280,8 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	var personID int64
 	if person != nil {
 		personID = person.ID
+	} else {
+		personID = s.getDefaultPersonID()
 	}
 
 	uploadID := auth.GenerateRandomID(16)
@@ -2497,6 +2507,8 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	var pID int64
 	if u.PersonID > 0 {
 		pID = u.PersonID
+	} else {
+		pID = s.getDefaultPersonID()
 	}
 
 	_, err = s.db.Exec(`
@@ -2644,6 +2656,8 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	var pID int64
 	if person != nil {
 		pID = person.ID
+	} else {
+		pID = s.getDefaultPersonID()
 	}
 
 	_, err = s.db.Exec(`

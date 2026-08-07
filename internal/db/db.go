@@ -196,6 +196,8 @@ func migrateSchema(db *sql.DB) error {
 	// Safe alter table migrations for existing tables
 	_, _ = db.Exec("ALTER TABLE device_sessions ADD COLUMN admin_id INTEGER;")
 	_, _ = db.Exec("ALTER TABLE device_sessions ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE invite_codes ADD COLUMN code_prefix TEXT NOT NULL DEFAULT '';")
+	_, _ = db.Exec("ALTER TABLE files ADD COLUMN uploader_name TEXT NOT NULL DEFAULT 'Пользователь';")
 
 	return nil
 }
