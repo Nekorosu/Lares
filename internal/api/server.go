@@ -2066,12 +2066,15 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		code := auth.GenerateInviteCode()
 		prefix := auth.FormatCodePrefix(code)
-		codeHash := auth.HashString(code)
+		codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
 
 		var personID int64
 		_ = s.db.QueryRow("SELECT id FROM people WHERE enabled = 1 ORDER BY id ASC LIMIT 1").Scan(&personID)
 		if personID == 0 {
-			res, err := s.db.Exec("INSERT INTO people (label, enabled, created_at) VALUES (?, 1, ?)", "Standard User", time.Now().UTC())
+			res, err := s.db.Exec(`
+				INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, created_at)
+				VALUES (?, '', 1, ?, ?, ?, ?, 1, ?)
+			`, "Standard User", s.cfg.StorageDefaults.QuotaBytes, s.cfg.StorageDefaults.MonthlyUploadLimit, s.cfg.StorageDefaults.MonthlyDownloadLimit, s.cfg.StorageDefaults.MaxFileSize, time.Now().UTC())
 			if err == nil {
 				personID, _ = res.LastInsertId()
 			}
@@ -2488,15 +2491,18 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 		contentType = "application/octet-stream"
 	}
 
-	var personIDVal interface{}
+	clientIP := netutils.GetClientIP(r)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+
+	var pID int64
 	if u.PersonID > 0 {
-		personIDVal = u.PersonID
+		pID = u.PersonID
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO files (id, person_id, session_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at)
+		INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at, client_ip_hash)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, fileID, personIDVal, u.SessionID, uploaderName, u.OriginalName, storedRelPath, actualSize, contentType, status, flagged, flagReason, now, expAt)
+	`, fileID, pID, uploaderName, u.OriginalName, storedRelPath, actualSize, contentType, status, flagged, flagReason, now, expAt, ipHash)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -2579,10 +2585,8 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 
 	sess, person, admin := s.getSession(r)
 	uploaderName := "Пользователь Web"
-	var personIDVal interface{}
 	if person != nil {
 		uploaderName = person.Label
-		personIDVal = person.ID
 	} else if admin != nil || (sess != nil && sess.IsAdmin) {
 		uploaderName = "Администратор"
 	}
@@ -2634,15 +2638,18 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 
-	var sessID interface{}
-	if sess != nil {
-		sessID = sess.ID
+	clientIP := netutils.GetClientIP(r)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+
+	var pID int64
+	if person != nil {
+		pID = person.ID
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO files (id, person_id, session_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at)
+		INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at, client_ip_hash)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, fileID, personIDVal, sessID, uploaderName, filename, storedRelPath, size, contentType, status, flagged, flagReason, now, expAt)
+	`, fileID, pID, uploaderName, filename, storedRelPath, size, contentType, status, flagged, flagReason, now, expAt, ipHash)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

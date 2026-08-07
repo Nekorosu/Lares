@@ -147,12 +147,18 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// Ensure dummy example secrets are replaced with auto-generated secrets
+	needSave := false
 	if cfg.Secrets.SessionSecret == "" || cfg.Secrets.SessionSecret == "AUTO_GENERATED_SECRET_KEY_CHANGE_IN_PRODUCTION" {
 		cfg.Secrets.SessionSecret = generateRandomSecret(32)
+		needSave = true
 	}
 	if cfg.Secrets.IPHashSalt == "" || cfg.Secrets.IPHashSalt == "AUTO_GENERATED_IP_SALT_CHANGE_IN_PRODUCTION" {
 		cfg.Secrets.IPHashSalt = generateRandomSecret(32)
+		needSave = true
+	}
+
+	if needSave && path != "" {
+		_ = SaveConfig(cfg, path)
 	}
 
 	return cfg, nil
