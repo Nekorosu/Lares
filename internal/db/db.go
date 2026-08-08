@@ -42,6 +42,27 @@ func migrateSchema(db *sql.DB) error {
 		_, _ = db.Exec("DROP TABLE device_sessions;")
 	}
 
+	// Drop legacy tables referencing old 'persons' table or having obsolete column types
+	var inviteSql, uploadsSql, filesSql, trafficSql string
+	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='invite_codes'").Scan(&inviteSql)
+	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='uploads'").Scan(&uploadsSql)
+	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='files'").Scan(&filesSql)
+	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='traffic_counters'").Scan(&trafficSql)
+
+	if strings.Contains(inviteSql, "REFERENCES persons") {
+		_, _ = db.Exec("DROP TABLE IF EXISTS invite_codes;")
+	}
+	if strings.Contains(uploadsSql, "REFERENCES persons") || strings.Contains(uploadsSql, "id INTEGER") || strings.Contains(uploadsSql, "session_id INTEGER NOT NULL") {
+		_, _ = db.Exec("DROP TABLE IF EXISTS uploads;")
+	}
+	if strings.Contains(filesSql, "REFERENCES persons") {
+		_, _ = db.Exec("DROP TABLE IF EXISTS files;")
+	}
+	if strings.Contains(trafficSql, "REFERENCES persons") {
+		_, _ = db.Exec("DROP TABLE IF EXISTS traffic_counters;")
+	}
+	_, _ = db.Exec("DROP TABLE IF EXISTS persons;")
+
 	schema := `
 
 	CREATE TABLE IF NOT EXISTS admin_users (
@@ -107,7 +128,7 @@ func migrateSchema(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS uploads (
 		id TEXT PRIMARY KEY,
 		person_id INTEGER NOT NULL,
-		session_id INTEGER NOT NULL,
+		session_id INTEGER,
 		upload_secret_hash TEXT NOT NULL,
 		original_name TEXT NOT NULL,
 		declared_size INTEGER NOT NULL,
@@ -198,6 +219,14 @@ func migrateSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE device_sessions ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE invite_codes ADD COLUMN code_prefix TEXT NOT NULL DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE files ADD COLUMN uploader_name TEXT NOT NULL DEFAULT 'Пользователь';")
+	_, _ = db.Exec("ALTER TABLE traffic_counters ADD COLUMN local_upload_bytes INTEGER NOT NULL DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE traffic_counters ADD COLUMN local_download_bytes INTEGER NOT NULL DEFAULT 0;")
+	_, _ = db.Exec(`
+		INSERT INTO people (id, label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, allow_user_keep_forever, session_idle_days, session_absolute_days, ignore_traffic_quota, created_at)
+		VALUES (0, 'Администратор', 'Системный профиль Администратора', 1, 1099511627776, 1099511627776, 1099511627776, 1099511627776, 100, 1, 365, 365, 1, datetime('now'))
+		ON CONFLICT(id) DO NOTHING;
+	`)
+	_, _ = db.Exec("UPDATE files SET person_id = 0 WHERE uploader_name = 'Администратор' OR uploader_name = 'admin';")
 
 	return nil
 }

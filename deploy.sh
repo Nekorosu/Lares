@@ -8,9 +8,12 @@ npm run build
 echo "⚙️ Компиляция backend части..."
 go mod tidy
 go build -o homeshare ./cmd/homeshare
-echo "📦 Копирование исполняемого файла в системную директорию..."
+echo "📦 Копирование исполняемого файла и фронтенд бандла в системную директорию..."
 sudo systemctl stop lares.service
 sudo cp homeshare /usr/local/bin/homeshare
+sudo mkdir -p /var/lib/homeshare/dist
+sudo rm -rf /var/lib/homeshare/dist/*
+sudo cp -r dist/* /var/lib/homeshare/dist/
 echo "🔄 Перезапуск сервиса lares..."
 sudo systemctl restart lares.service
 echo "✅ Статус сервиса lares:"

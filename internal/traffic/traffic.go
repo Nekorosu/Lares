@@ -94,13 +94,25 @@ func (m *Manager) CanDownload(personID int64, monthlyLimit, fileSize int64, igno
 }
 
 func (m *Manager) RecordUploadCompleted(personID int64, bytes int64, isLocal bool) error {
-	if isLocal || bytes <= 0 {
+	if bytes <= 0 {
 		return nil
 	}
 	month := GetCurrentMonth()
+	if isLocal {
+		query := `
+			INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
+			VALUES (?, ?, 0, 0, 0, 0, ?, 0, ?)
+			ON CONFLICT(person_id, month) DO UPDATE SET
+				local_upload_bytes = local_upload_bytes + excluded.local_upload_bytes,
+				updated_at = excluded.updated_at
+		`
+		_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
+		return err
+	}
+
 	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, updated_at)
-		VALUES (?, ?, ?, 0, 0, 0, ?)
+		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
+		VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?)
 		ON CONFLICT(person_id, month) DO UPDATE SET
 			upload_completed_bytes = upload_completed_bytes + excluded.upload_completed_bytes,
 			updated_at = excluded.updated_at
@@ -115,8 +127,8 @@ func (m *Manager) RecordUploadAborted(personID int64, bytes int64, isLocal bool)
 	}
 	month := GetCurrentMonth()
 	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, updated_at)
-		VALUES (?, ?, 0, ?, 0, 0, ?)
+		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
+		VALUES (?, ?, 0, ?, 0, 0, 0, 0, ?)
 		ON CONFLICT(person_id, month) DO UPDATE SET
 			upload_aborted_bytes = upload_aborted_bytes + excluded.upload_aborted_bytes,
 			updated_at = excluded.updated_at
@@ -126,13 +138,25 @@ func (m *Manager) RecordUploadAborted(personID int64, bytes int64, isLocal bool)
 }
 
 func (m *Manager) RecordDownloadCompleted(personID int64, bytes int64, isLocal bool) error {
-	if isLocal || bytes <= 0 {
+	if bytes <= 0 {
 		return nil
 	}
 	month := GetCurrentMonth()
+	if isLocal {
+		query := `
+			INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
+			VALUES (?, ?, 0, 0, 0, 0, 0, ?, ?)
+			ON CONFLICT(person_id, month) DO UPDATE SET
+				local_download_bytes = local_download_bytes + excluded.local_download_bytes,
+				updated_at = excluded.updated_at
+		`
+		_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
+		return err
+	}
+
 	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, updated_at)
-		VALUES (?, ?, 0, 0, ?, 0, ?)
+		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
+		VALUES (?, ?, 0, 0, ?, 0, 0, 0, ?)
 		ON CONFLICT(person_id, month) DO UPDATE SET
 			download_completed_bytes = download_completed_bytes + excluded.download_completed_bytes,
 			updated_at = excluded.updated_at

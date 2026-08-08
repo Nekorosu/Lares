@@ -145,11 +145,27 @@ func (sm *StorageManager) DeletePartFile(uploadID string) {
 	_ = os.Remove(partPath)
 }
 
+func (sm *StorageManager) ResolvePath(storedPath string) string {
+	if storedPath == "" {
+		return ""
+	}
+	if filepath.IsAbs(storedPath) {
+		return storedPath
+	}
+	return filepath.Join(sm.dataDir, storedPath)
+}
+
 func (sm *StorageManager) DeleteFile(storedPath string) error {
-	if !strings.HasPrefix(filepath.Clean(storedPath), filepath.Clean(sm.dataDir)) {
+	fullPath := sm.ResolvePath(storedPath)
+	if fullPath == "" {
+		return errors.New("empty stored path")
+	}
+	cleanFull := filepath.Clean(fullPath)
+	cleanData := filepath.Clean(sm.dataDir)
+	if !strings.HasPrefix(cleanFull, cleanData) {
 		return errors.New("invalid stored path out of data dir boundary")
 	}
-	return os.Remove(storedPath)
+	return os.Remove(cleanFull)
 }
 
 var invalidFilenameChars = regexp.MustCompile(`[^\w\.\-\s\(\)\[\]]`)

@@ -151,10 +151,10 @@ func (s *Server) renderTemplate(w http.ResponseWriter, pageName string, data int
 
 func findDistDir() string {
 	candidates := []string{
-		"./dist",
-		"../dist",
 		"/srv/media/tmp/Lares/dist",
 		"/var/lib/homeshare/dist",
+		"./dist",
+		"../dist",
 	}
 	for _, dir := range candidates {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
@@ -180,21 +180,36 @@ func (s *Server) Routes() http.Handler {
 	// JSON API routes for React SPA & API Clients
 	mux.HandleFunc("/api/auth/login", s.handleAPIAuthLogin)
 	mux.HandleFunc("/api/auth/me", s.handleAPIAuthMe)
+	mux.HandleFunc("/api/auth/invite/activate", s.handleAPIInviteActivate)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/files", s.handleAPIFiles)
+	mux.HandleFunc("/api/files/delete/", s.handleAPIFilesDelete)
 	mux.HandleFunc("/api/admin/invites", s.handleAPIAdminInvites)
+	mux.HandleFunc("/api/admin/invites/revoke/", s.handleAPIAdminInvitesRevoke)
 	mux.HandleFunc("/api/admin/sessions", s.handleAPIAdminSessions)
 	mux.HandleFunc("/api/admin/sessions/", s.handleAPIAdminSessions)
 	mux.HandleFunc("/api/admin/quarantine/", s.handleAPIAdminQuarantineApprove)
+	mux.HandleFunc("/api/admin/people", s.handleAPIAdminPeople)
+	mux.HandleFunc("/api/admin/people/create", s.handleAPIAdminPeopleCreate)
+	mux.HandleFunc("/api/admin/people/disable/", s.handleAPIAdminPeopleToggle)
+	mux.HandleFunc("/api/admin/people/enable/", s.handleAPIAdminPeopleToggle)
+	mux.HandleFunc("/api/admin/people/delete/", s.handleAPIAdminPeopleToggle)
+	mux.HandleFunc("/api/admin/active-uploads", s.handleAPIAdminActiveUploads)
+	mux.HandleFunc("/api/admin/active-uploads/cancel/", s.handleAPIAdminActiveUploads)
+	mux.HandleFunc("/api/admin/audit", s.handleAPIAdminAudit)
+	mux.HandleFunc("/api/admin/settings", s.handleAPIAdminSettings)
 
 	// Auth routes
 	mux.HandleFunc("/login", s.handleUserLogin)
 	mux.HandleFunc("/admin/login", s.handleAdminLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
+	mux.HandleFunc("/admin", s.handleSPAFallback)
+	mux.HandleFunc("/admin/", s.handleSPAFallback)
 
 	// User dashboard & file operations
 	mux.HandleFunc("/", s.handleUserDashboard)
 	mux.HandleFunc("/download/", s.handleDownloadFile)
+	mux.HandleFunc("/api/files/download/", s.handleDownloadFile)
 	mux.HandleFunc("/preview/", s.handlePreviewFile)
 	mux.HandleFunc("/files/delete/", s.handleUserDeleteFile)
 	mux.HandleFunc("/api/zip", s.handleZipDownload)
@@ -236,12 +251,45 @@ func (s *Server) Routes() http.Handler {
 	return s.applySecurityHeaders(mux)
 }
 
+type statusWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
 func (s *Server) applySecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none';")
-		next.ServeHTTP(w, r)
+
+		if strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/favicon.ico" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		start := time.Now()
+		clientIP := netutils.GetClientIP(r)
+		sw := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(sw, r)
+
+		duration := time.Since(start)
+		sess, person, admin := s.getSession(r)
+		userTag := "guest"
+		if person != nil {
+			userTag = fmt.Sprintf("user:%s(#%d)", person.Label, person.ID)
+		} else if admin != nil || (sess != nil && sess.IsAdmin) {
+			userTag = "admin"
+			if admin != nil {
+				userTag = fmt.Sprintf("admin:%s", admin.Username)
+			}
+		}
+
+		log.Printf("[HTTP] %s %s | %d | IP: %s | %v | %s", r.Method, r.URL.Path, sw.statusCode, clientIP, duration.Round(time.Millisecond), userTag)
 	})
 }
 
@@ -253,6 +301,8 @@ func (s *Server) getSession(r *http.Request) (*models.DeviceSession, *models.Per
 		tokenStr = cookie.Value
 	} else if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 		tokenStr = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	} else if queryToken := r.URL.Query().Get("token"); queryToken != "" {
+		tokenStr = queryToken
 	}
 
 	if tokenStr == "" {
@@ -290,11 +340,15 @@ func (s *Server) getSession(r *http.Request) (*models.DeviceSession, *models.Per
 	newIdle := now.Add(time.Duration(idleDays) * 24 * time.Hour)
 	_, _ = s.db.Exec("UPDATE device_sessions SET last_used_at = ?, idle_expires_at = ? WHERE id = ?", now, newIdle, sess.ID)
 
-	if sess.IsAdmin && sess.AdminID != nil {
-		err = s.db.QueryRow("SELECT id, username FROM admin_users WHERE id = ?", *sess.AdminID).Scan(&admin.ID, &admin.Username)
-		if err == nil {
-			return &sess, nil, &admin
+	if sess.IsAdmin {
+		if sess.AdminID != nil {
+			_ = s.db.QueryRow("SELECT id, username FROM admin_users WHERE id = ?", *sess.AdminID).Scan(&admin.ID, &admin.Username)
 		}
+		if admin.ID == 0 {
+			admin.ID = 1
+			admin.Username = "admin"
+		}
+		return &sess, nil, &admin
 	}
 
 	err = s.db.QueryRow(`
@@ -688,23 +742,33 @@ func (s *Server) handleUserDashboard(w http.ResponseWriter, r *http.Request) {
 
 // User Delete Own File
 func (s *Server) handleUserDeleteFile(w http.ResponseWriter, r *http.Request) {
-	sess, person, _ := s.getSession(r)
-	if sess == nil || person == nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	sess, person, admin := s.getSession(r)
+	if sess == nil {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	fileID := strings.TrimPrefix(r.URL.Path, "/files/delete/")
 	var f models.FileRecord
 	err := s.db.QueryRow("SELECT id, person_id, stored_path, protected FROM files WHERE id = ?", fileID).Scan(&f.ID, &f.PersonID, &f.StoredPath, &f.Protected)
-	if err != nil || f.PersonID != person.ID || f.Protected {
-		http.Error(w, "Forbidden or not found", http.StatusForbidden)
+	if err != nil {
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
+	}
+
+	isAdminSession := (admin != nil) || (sess != nil && sess.IsAdmin)
+	if !isAdminSession {
+		if person == nil || person.ID == 0 || f.PersonID != person.ID || f.Protected {
+			http.Error(w, "Forbidden: Вы можете удалять только свои собственные файлы", http.StatusForbidden)
+			return
+		}
 	}
 
 	_ = s.sm.DeleteFile(f.StoredPath)
 	_, _ = s.db.Exec("DELETE FROM files WHERE id = ?", f.ID)
-	s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, netutils.GetClientIP(r), "User deleted file")
+	if person != nil {
+		s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, netutils.GetClientIP(r), "User deleted file")
+	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -993,7 +1057,9 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileID := strings.TrimPrefix(r.URL.Path, "/download/")
+	fileID := strings.TrimPrefix(r.URL.Path, "/api/files/download/")
+	fileID = strings.TrimPrefix(fileID, "/download/")
+	fileID = strings.TrimPrefix(fileID, "/")
 	var f models.FileRecord
 	err := s.db.QueryRow("SELECT id, person_id, original_name, stored_path, size, content_type, status FROM files WHERE id = ?", fileID).Scan(&f.ID, &f.PersonID, &f.OriginalName, &f.StoredPath, &f.Size, &f.ContentType, &f.Status)
 	if err != nil {
@@ -1017,7 +1083,8 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	file, err := os.Open(f.StoredPath)
+	fullPath := s.sm.ResolvePath(f.StoredPath)
+	file, err := os.Open(fullPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1026,8 +1093,18 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 
 	safeFilename := strings.ReplaceAll(strings.ReplaceAll(f.OriginalName, `"`, `\"`), "\n", "")
 	escapedFilename := url.PathEscape(f.OriginalName)
+
+	contentType := f.ContentType
+	if contentType == "" || contentType == "application/octet-stream" {
+		if detectType := mime.TypeByExtension(filepath.Ext(f.OriginalName)); detectType != "" {
+			contentType = detectType
+		} else {
+			contentType = "application/octet-stream"
+		}
+	}
+
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, safeFilename, escapedFilename))
-	w.Header().Set("Content-Type", "application/octet-stream")
 
 	// Wrap in speed limiter response writer
 	speedWriter := s.speedLimit.NewWriter(r.Context(), w, !isLocal, false)
@@ -1037,6 +1114,9 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 
 	if person != nil {
 		_ = s.tm.RecordDownloadCompleted(person.ID, f.Size, isLocal)
+		s.auditLog.Log("person", person.ID, "download_file", "file", f.ID, netutils.GetClientIP(r), fmt.Sprintf("Downloaded '%s' (%s)", f.OriginalName, formatBytes(f.Size)))
+	} else if admin != nil {
+		s.auditLog.Log("admin", admin.ID, "download_file", "file", f.ID, netutils.GetClientIP(r), fmt.Sprintf("Admin downloaded '%s' (%s)", f.OriginalName, formatBytes(f.Size)))
 	}
 }
 
@@ -1080,7 +1160,7 @@ func (s *Server) handlePreviewFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; media-src 'self'; image-src 'self'; style-src 'unsafe-inline';")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	http.ServeFile(w, r, f.StoredPath)
+	http.ServeFile(w, r, s.sm.ResolvePath(f.StoredPath))
 }
 
 // Multi-file ZIP store mode download
@@ -1342,6 +1422,9 @@ func (s *Server) handleAdminInvites(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminInvitesCreate(w http.ResponseWriter, r *http.Request) {
 	personID, _ := strconv.ParseInt(r.FormValue("person_id"), 10, 64)
+	if personID <= 0 {
+		personID = s.getDefaultPersonID()
+	}
 	maxActivations, _ := strconv.Atoi(r.FormValue("max_activations"))
 	expiresHours, _ := strconv.Atoi(r.FormValue("expires_hours"))
 
@@ -1357,6 +1440,7 @@ func (s *Server) handleAdminInvitesCreate(w http.ResponseWriter, r *http.Request
 	`, personID, codeHash, codePrefix, maxActivations, expiresAt, time.Now().UTC())
 
 	if err != nil {
+		log.Printf("[Invite Error] %v", err)
 		http.Error(w, "Failed to create invite", http.StatusInternalServerError)
 		return
 	}
@@ -1911,20 +1995,30 @@ func (s *Server) handleAPIAuthMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pID := int64(0)
 	username := ""
 	if person != nil {
+		pID = person.ID
 		username = person.Label
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"authenticated": true,
 		"role":          "user",
+		"person_id":      pID,
 		"username":      username,
 	})
 }
 
 func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, person, admin := s.getSession(r)
+	if sess == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
 	var usedStorage int64
 	_ = s.db.QueryRow("SELECT COALESCE(SUM(size), 0) FROM files WHERE status = 'ready'").Scan(&usedStorage)
 
@@ -1933,27 +2027,89 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM files WHERE status = 'quarantined'").Scan(&quarantineCount)
 
 	month := traffic.GetCurrentMonth()
-	var uploadCompleted, uploadAborted, downloadCompleted, downloadAborted int64
+	var uploadCompleted, uploadAborted, downloadCompleted, downloadAborted, localUpload, localDownload int64
 	_ = s.db.QueryRow(`
 		SELECT COALESCE(SUM(upload_completed_bytes), 0), COALESCE(SUM(upload_aborted_bytes), 0),
-		       COALESCE(SUM(download_completed_bytes), 0), COALESCE(SUM(download_aborted_bytes), 0)
+		       COALESCE(SUM(download_completed_bytes), 0), COALESCE(SUM(download_aborted_bytes), 0),
+		       COALESCE(SUM(local_upload_bytes), 0), COALESCE(SUM(local_download_bytes), 0)
 		FROM traffic_counters WHERE month = ?
-	`, month).Scan(&uploadCompleted, &uploadAborted, &downloadCompleted, &downloadAborted)
+	`, month).Scan(&uploadCompleted, &uploadAborted, &downloadCompleted, &downloadAborted, &localUpload, &localDownload)
 
 	var activeSessions int
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM device_sessions WHERE revoked = 0 AND idle_expires_at > ?", time.Now().UTC()).Scan(&activeSessions)
 
+	freeDiskBytes, totalDiskBytes, freeInodes, _ := s.sm.GetDiskUsage()
+
+	var userUsedBytes, userUploadBytes, userDownloadBytes int64
+	var userQuotaBytes, userUploadLimitBytes, userDownloadLimitBytes, userMaxFileSizeBytes int64
+	var extUp, locUp, extDown, locDown int64
+	var userLabel string
+
+	if person != nil {
+		userLabel = person.Label
+		userQuotaBytes = person.StorageQuotaBytes
+		userUploadLimitBytes = person.MonthlyUploadLimitBytes
+		userDownloadLimitBytes = person.MonthlyDownloadLimit
+		userMaxFileSizeBytes = person.MaxFileSizeBytes
+
+		_ = s.db.QueryRow("SELECT COALESCE(SUM(size), 0) FROM files WHERE status = 'ready' AND person_id = ?", person.ID).Scan(&userUsedBytes)
+		_ = s.db.QueryRow(`
+			SELECT COALESCE(upload_completed_bytes, 0), COALESCE(local_upload_bytes, 0),
+			       COALESCE(download_completed_bytes, 0), COALESCE(local_download_bytes, 0)
+			FROM traffic_counters WHERE person_id = ? AND month = ?
+		`, person.ID, month).Scan(&extUp, &locUp, &extDown, &locDown)
+
+		userUploadBytes = extUp
+		userDownloadBytes = extDown
+	} else if admin != nil || (sess != nil && sess.IsAdmin) {
+		userLabel = "Администратор"
+		userQuotaBytes = totalDiskBytes
+		userUploadLimitBytes = 1099511627776 * 100
+		userDownloadLimitBytes = 1099511627776 * 100
+		userMaxFileSizeBytes = s.cfg.StorageDefaults.MaxFileSize
+		userUsedBytes = usedStorage
+		extUp = uploadCompleted
+		locUp = localUpload
+		extDown = downloadCompleted
+		locDown = localDownload
+		userUploadBytes = uploadCompleted
+		userDownloadBytes = downloadCompleted
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"storage": map[string]interface{}{
-			"used_bytes":  usedStorage,
-			"quota_bytes": s.cfg.StorageDefaults.QuotaBytes,
-			"files_count": filesCount,
+			"used_bytes":       usedStorage,
+			"quota_bytes":      s.cfg.StorageDefaults.QuotaBytes,
+			"files_count":      filesCount,
+			"free_disk_bytes":  freeDiskBytes,
+			"total_disk_bytes": totalDiskBytes,
+			"free_inodes":     freeInodes,
+		},
+		"user_quota": map[string]interface{}{
+			"label":                 userLabel,
+			"used_bytes":            userUsedBytes,
+			"quota_bytes":           userQuotaBytes,
+			"upload_used_bytes":     userUploadBytes,
+			"external_upload_bytes": extUp,
+			"local_upload_bytes":    locUp,
+			"upload_limit_bytes":    userUploadLimitBytes,
+			"download_used_bytes":   userDownloadBytes,
+			"external_download_bytes": extDown,
+			"local_download_bytes":  locDown,
+			"download_limit_bytes":  userDownloadLimitBytes,
+			"max_file_size_bytes":   userMaxFileSizeBytes,
 		},
 		"traffic": map[string]interface{}{
-			"month":          month,
-			"upload_bytes":   uploadCompleted,
-			"download_bytes": downloadCompleted,
-			"total_bytes":    uploadCompleted + downloadCompleted,
+			"month":                  month,
+			"external_upload_bytes":  uploadCompleted,
+			"external_download_bytes": downloadCompleted,
+			"external_total_bytes":   uploadCompleted + downloadCompleted,
+			"local_upload_bytes":     localUpload,
+			"local_download_bytes":   localDownload,
+			"local_total_bytes":      localUpload + localDownload,
+			"total_bytes":            uploadCompleted + downloadCompleted + localUpload + localDownload,
+			"upload_bytes":           uploadCompleted + localUpload,
+			"download_bytes":         downloadCompleted + localDownload,
 		},
 		"active_sessions":  activeSessions,
 		"quarantine_count": quarantineCount,
@@ -1968,9 +2124,14 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAPIFiles(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, person, admin := s.getSession(r)
+	sess, person, admin := s.getSession(r)
+	if sess == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
 
-	query := "SELECT id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at FROM files WHERE 1=1"
+	query := "SELECT id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at FROM files WHERE 1=1"
 	var args []interface{}
 
 	if admin == nil {
@@ -1996,13 +2157,17 @@ func (s *Server) handleAPIFiles(w http.ResponseWriter, r *http.Request) {
 		var f models.FileRecord
 		var expAt *time.Time
 		var flagReason sql.NullString
-		_ = rows.Scan(&f.ID, &f.UploaderName, &f.OriginalName, &f.StoredPath, &f.Size, &f.ContentType, &f.Status, &f.Flagged, &flagReason, &f.CreatedAt, &expAt)
+		_ = rows.Scan(&f.ID, &f.PersonID, &f.UploaderName, &f.OriginalName, &f.StoredPath, &f.Size, &f.ContentType, &f.Status, &f.Flagged, &flagReason, &f.CreatedAt, &expAt)
 
 		f.FlagReason = flagReason.String
 		f.ExpiresAt = expAt
 
+		isOwner := admin != nil || (person != nil && f.PersonID == person.ID)
+
 		item := map[string]interface{}{
 			"id":             f.ID,
+			"person_id":      f.PersonID,
+			"is_owner":       isOwner,
 			"original_name":  f.OriginalName,
 			"stored_path":    f.StoredPath,
 			"size":           f.Size,
@@ -2034,7 +2199,10 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		rows, err := s.db.Query("SELECT code_prefix, max_activations, activations_used, enabled, created_at FROM invite_codes ORDER BY id DESC")
+		rows, err := s.db.Query(`
+			SELECT id, person_id, code_prefix, enabled, max_activations, activations_used, expires_at, created_at
+			FROM invite_codes ORDER BY created_at DESC
+		`)
 		if err != nil {
 			json.NewEncoder(w).Encode([]interface{}{})
 			return
@@ -2043,17 +2211,28 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 
 		var list []map[string]interface{}
 		for rows.Next() {
+			var id, personID int64
 			var prefix string
-			var maxAct, act int
 			var enabled bool
-			var createdAt time.Time
-			_ = rows.Scan(&prefix, &maxAct, &act, &enabled, &createdAt)
+			var maxAct, act int
+			var expiresRaw, createdRaw interface{}
+			_ = rows.Scan(&id, &personID, &prefix, &enabled, &maxAct, &act, &expiresRaw, &createdRaw)
+
+			expStr := parseTimeStr(expiresRaw)
+			credStr := parseTimeStr(createdRaw)
+
 			list = append(list, map[string]interface{}{
-				"code":            prefix,
-				"max_activations": maxAct,
-				"activations":     act,
-				"revoked":         !enabled,
-				"created_at":      createdAt.Format(time.RFC3339),
+				"id":               fmt.Sprintf("%d", id),
+				"person_id":        personID,
+				"code":             prefix,
+				"code_prefix":      prefix,
+				"enabled":          enabled,
+				"max_activations":  maxAct,
+				"activations_used": act,
+				"activations":      act,
+				"revoked":          !enabled,
+				"expires_at":       expStr,
+				"created_at":       credStr,
 			})
 		}
 		if list == nil {
@@ -2064,20 +2243,41 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
+		var req struct {
+			PersonID       int64 `json:"person_id"`
+			MaxActivations int   `json:"max_activations"`
+			ExpiryDays     int   `json:"expiry_days"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		maxActivations := req.MaxActivations
+		if maxActivations <= 0 {
+			maxActivations = 1
+		}
+
+		expiryDays := req.ExpiryDays
+		if expiryDays <= 0 {
+			expiryDays = 30
+		}
+
 		code := auth.GenerateInviteCode()
+		code = auth.NormalizeInviteCode(code)
 		prefix := auth.FormatCodePrefix(code)
 		codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
 
-		personID := s.getDefaultPersonID()
+		personID := req.PersonID
+		if personID <= 0 {
+			personID = s.getDefaultPersonID()
+		}
 
 		now := time.Now().UTC()
-		expiresAt := now.Add(30 * 24 * time.Hour)
+		expiresAt := now.Add(time.Duration(expiryDays) * 24 * time.Hour)
 		adminID := admin.ID
 
 		_, err := s.db.Exec(`
 			INSERT INTO invite_codes (person_id, code_hash, code_prefix, max_activations, activations_used, enabled, expires_at, created_at, created_by_admin_id)
-			VALUES (?, ?, ?, 5, 0, 1, ?, ?, ?)
-		`, personID, codeHash, prefix, expiresAt, now, adminID)
+			VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?)
+		`, personID, codeHash, prefix, maxActivations, expiresAt, now, adminID)
 
 		if err != nil {
 			log.Printf("[Invite Error] %v", err)
@@ -2089,7 +2289,7 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"code":            code,
 			"invite_code":     code,
-			"max_activations": 5,
+			"max_activations": maxActivations,
 			"activations":     0,
 			"revoked":         false,
 			"created_at":      now.Format(time.RFC3339),
@@ -2100,6 +2300,39 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusMethodNotAllowed)
 	json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+}
+
+func (s *Server) handleAPIAdminInvitesRevoke(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	inviteID := strings.TrimPrefix(r.URL.Path, "/api/admin/invites/revoke/")
+	inviteID = strings.TrimPrefix(inviteID, "/")
+	if inviteID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invite ID is required"})
+		return
+	}
+
+	_, err := s.db.Exec("DELETE FROM invite_codes WHERE id = ?", inviteID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to delete invite code"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Инвайт успешно удален"})
 }
 
 func (s *Server) handleAPIAdminSessions(w http.ResponseWriter, r *http.Request) {
@@ -2192,6 +2425,300 @@ func (s *Server) handleAPIAdminQuarantineApprove(w http.ResponseWriter, r *http.
 	json.NewEncoder(w).Encode(map[string]string{"error": "File not found"})
 }
 
+func (s *Server) handleSPAFallback(w http.ResponseWriter, r *http.Request) {
+	distDir := findDistDir()
+	if distDir != "" {
+		indexPath := filepath.Join(distDir, "index.html")
+		if _, err := os.Stat(indexPath); err == nil {
+			http.ServeFile(w, r, indexPath)
+			return
+		}
+	}
+	s.handleAdminDashboard(w, r)
+}
+
+func (s *Server) handleAPIAdminPeople(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, created_at
+		FROM people WHERE id > 0 ORDER BY id ASC
+	`)
+	if err != nil {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	defer rows.Close()
+
+	var list []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var label, notes string
+		var enabled bool
+		var quota, upLim, downLim, maxFile int64
+		var createdAt time.Time
+		_ = rows.Scan(&id, &label, &notes, &enabled, &quota, &upLim, &downLim, &maxFile, &createdAt)
+		list = append(list, map[string]interface{}{
+			"id":                          id,
+			"label":                       label,
+			"notes":                       notes,
+			"enabled":                     enabled,
+			"storage_quota_bytes":         quota,
+			"monthly_upload_limit_bytes":   upLim,
+			"monthly_download_limit_bytes": downLim,
+			"max_file_size_bytes":         maxFile,
+			"created_at":                  createdAt.Format(time.RFC3339),
+		})
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+func (s *Server) handleAPIAdminPeopleCreate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+
+	var req struct {
+		ID                     int64   `json:"id"`
+		Label                  string  `json:"label"`
+		Notes                  string  `json:"notes"`
+		StorageQuotaGB         float64 `json:"storage_quota_gb"`
+		MonthlyUploadLimitGB   float64 `json:"monthly_upload_limit_gb"`
+		MonthlyDownloadLimitGB float64 `json:"monthly_download_limit_gb"`
+		MaxFileSizeGB          float64 `json:"max_file_size_gb"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if strings.TrimSpace(req.Label) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Имя пользователя не может быть пустым"})
+		return
+	}
+
+	storageQuota := s.cfg.StorageDefaults.QuotaBytes
+	if req.StorageQuotaGB > 0 {
+		storageQuota = int64(req.StorageQuotaGB * 1024 * 1024 * 1024)
+	}
+
+	uploadLimit := s.cfg.StorageDefaults.MonthlyUploadLimit
+	if req.MonthlyUploadLimitGB > 0 {
+		uploadLimit = int64(req.MonthlyUploadLimitGB * 1024 * 1024 * 1024)
+	}
+
+	downloadLimit := s.cfg.StorageDefaults.MonthlyDownloadLimit
+	if req.MonthlyDownloadLimitGB > 0 {
+		downloadLimit = int64(req.MonthlyDownloadLimitGB * 1024 * 1024 * 1024)
+	}
+
+	maxFileSize := s.cfg.StorageDefaults.MaxFileSize
+	if req.MaxFileSizeGB > 0 {
+		maxFileSize = int64(req.MaxFileSizeGB * 1024 * 1024 * 1024)
+	}
+
+	if req.ID > 0 {
+		_, err := s.db.Exec(`
+			UPDATE people SET
+				label = ?, notes = ?, storage_quota_bytes = ?,
+				monthly_upload_limit_bytes = ?, monthly_download_limit_bytes = ?,
+				max_file_size_bytes = ?
+			WHERE id = ?
+		`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, req.ID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Ошибка обновления профиля"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "id": req.ID})
+		return
+	}
+
+	res, err := s.db.Exec(`
+		INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, allow_user_keep_forever, session_idle_days, session_absolute_days, ignore_traffic_quota, created_at, last_activity_at)
+		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+	`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, s.cfg.StorageDefaults.MaxConcurrentUploads, s.cfg.StorageDefaults.AllowUserKeepForever, s.cfg.SessionDefaults.UserIdleDays, s.cfg.SessionDefaults.UserAbsoluteDays)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Ошибка создания пользователя"})
+		return
+	}
+	id, _ := res.LastInsertId()
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "id": id})
+}
+
+func (s *Server) handleAPIAdminPeopleToggle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/admin/people/disable/") {
+		pIDStr := strings.TrimPrefix(r.URL.Path, "/api/admin/people/disable/")
+		pID, _ := strconv.ParseInt(pIDStr, 10, 64)
+		_, _ = s.db.Exec("UPDATE people SET enabled = 0 WHERE id = ?", pID)
+		_, _ = s.db.Exec("UPDATE device_sessions SET revoked = 1 WHERE person_id = ?", pID)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/admin/people/enable/") {
+		pIDStr := strings.TrimPrefix(r.URL.Path, "/api/admin/people/enable/")
+		pID, _ := strconv.ParseInt(pIDStr, 10, 64)
+		_, _ = s.db.Exec("UPDATE people SET enabled = 1 WHERE id = ?", pID)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/admin/people/delete/") {
+		pIDStr := strings.TrimPrefix(r.URL.Path, "/api/admin/people/delete/")
+		pID, _ := strconv.ParseInt(pIDStr, 10, 64)
+		_, _ = s.db.Exec("DELETE FROM people WHERE id = ?", pID)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+}
+
+func (s *Server) handleAPIAdminActiveUploads(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/admin/active-uploads/cancel/") {
+		upID := strings.TrimPrefix(r.URL.Path, "/api/admin/active-uploads/cancel/")
+		s.sm.DeletePartFile(upID)
+		_, _ = s.db.Exec("UPDATE uploads SET status = 'canceled' WHERE id = ?", upID)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
+	rows, err := s.db.Query(`
+		SELECT u.id, u.original_name, u.declared_size, u.received_bytes, u.status, u.created_at, COALESCE(p.label, 'Гость')
+		FROM uploads u LEFT JOIN people p ON u.person_id = p.id
+		WHERE u.status IN ('reserved', 'uploading')
+		ORDER BY u.created_at DESC
+	`)
+	if err != nil {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	defer rows.Close()
+
+	var list []map[string]interface{}
+	for rows.Next() {
+		var id, origName, status, personLabel string
+		var declaredSize, receivedBytes int64
+		var createdAt time.Time
+		_ = rows.Scan(&id, &origName, &declaredSize, &receivedBytes, &status, &createdAt, &personLabel)
+		list = append(list, map[string]interface{}{
+			"id":             id,
+			"original_name":  origName,
+			"declared_size":  declaredSize,
+			"received_bytes": receivedBytes,
+			"status":         status,
+			"created_at":     createdAt.Format(time.RFC3339),
+			"person_label":   personLabel,
+		})
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+func (s *Server) handleAPIAdminAudit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, time, actor_type, actor_id, event, entity_type, entity_id, details
+		FROM audit_logs ORDER BY id DESC LIMIT 100
+	`)
+	if err != nil {
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	defer rows.Close()
+
+	var list []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var timeVal time.Time
+		var actorType, event, entityType, entityID, details string
+		var actorID int64
+		_ = rows.Scan(&id, &timeVal, &actorType, &actorID, &event, &entityType, &entityID, &details)
+		list = append(list, map[string]interface{}{
+			"id":          id,
+			"time":        timeVal.Format("02.01.2006 15:04:05"),
+			"actor_type":  actorType,
+			"actor_id":    actorID,
+			"event":       event,
+			"entity_type": entityType,
+			"entity_id":   entityID,
+			"details":     details,
+		})
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+func (s *Server) handleAPIAdminSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	sess, _, admin := s.getSession(r)
+	if sess == nil || !sess.IsAdmin || admin == nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Доступ запрещен"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"storage_defaults": map[string]interface{}{
+			"quota_gb":          s.cfg.StorageDefaults.QuotaBytes / (1024 * 1024 * 1024),
+			"upload_limit_gb":   s.cfg.StorageDefaults.MonthlyUploadLimit / (1024 * 1024 * 1024),
+			"download_limit_gb": s.cfg.StorageDefaults.MonthlyDownloadLimit / (1024 * 1024 * 1024),
+			"max_file_size_gb":  s.cfg.StorageDefaults.MaxFileSize / (1024 * 1024 * 1024),
+			"default_expiry":    s.cfg.StorageDefaults.DefaultExpiryDays,
+		},
+		"speed_limits": map[string]interface{}{
+			"upload_mbps":   s.cfg.SpeedLimits.ExternalUploadMbps,
+			"download_mbps": s.cfg.SpeedLimits.ExternalDownloadMbps,
+			"burst_mb":      s.cfg.SpeedLimits.BurstMB,
+		},
+		"disk_reserve": map[string]interface{}{
+			"min_free_gb":      s.cfg.DiskReserve.MinFreeSpaceGB,
+			"critical_free_gb": s.cfg.DiskReserve.CriticalFreeSpaceGB,
+			"min_inodes":       s.cfg.DiskReserve.MinFreeInodes,
+		},
+		"suspicious_extensions": s.cfg.SuspiciousExtensions,
+	})
+}
+
 func (s *Server) validateCSRFToken(r *http.Request, sess *models.DeviceSession) bool {
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
@@ -2276,12 +2803,20 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 		expiryDays = 14
 	}
 
-	sess, person, _ := s.getSession(r)
+	sess, person, admin := s.getSession(r)
 	var personID int64
 	if person != nil {
 		personID = person.ID
+	} else if admin != nil || (sess != nil && sess.IsAdmin) {
+		personID = 0
 	} else {
-		personID = s.getDefaultPersonID()
+		personID = 0
+	}
+
+	if err := s.sm.CheckDiskSpaceForNewUpload(size); err != nil {
+		w.WriteHeader(http.StatusInsufficientStorage)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
 	}
 
 	uploadID := auth.GenerateRandomID(16)
@@ -2295,12 +2830,16 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 		sessID = sess.ID
 	}
 
+	clientIP := netutils.GetClientIP(r)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+
 	_, err := s.db.Exec(`
-		INSERT INTO uploads (id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes, status, expiry_days, reservation_expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, 'reserved', ?, ?, ?)
-	`, uploadID, personID, sessID, uploadSecretHash, filename, size, expiryDays, resExpires, now)
+		INSERT INTO uploads (id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes, status, expiry_days, reservation_expires_at, created_at, client_ip_hash)
+		VALUES (?, ?, ?, ?, ?, ?, 0, 'reserved', ?, ?, ?, ?)
+	`, uploadID, personID, sessID, uploadSecretHash, filename, size, expiryDays, resExpires, now, ipHash)
 
 	if err != nil {
+		log.Printf("[Upload Reserve Error] %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reserve upload"})
 		return
@@ -2344,6 +2883,17 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Upload not found"})
+		return
+	}
+
+	if err := s.sm.CheckDiskSpaceCritical(); err != nil {
+		s.sm.DeletePartFile(uploadID)
+		_, _ = s.db.Exec("UPDATE uploads SET status = 'aborted' WHERE id = ?", uploadID)
+		if u.PersonID > 0 && u.ReceivedBytes > 0 {
+			_ = s.tm.RecordUploadAborted(u.PersonID, u.ReceivedBytes, s.netChecker.IsLocal(r))
+		}
+		w.WriteHeader(http.StatusInsufficientStorage)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Критическая нехватка места на сервере. Загрузка отменена."})
 		return
 	}
 
@@ -2522,6 +3072,8 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	_ = s.tm.RecordUploadCompleted(pID, actualSize, s.netChecker.IsLocal(r))
+
 	_, _ = s.db.Exec("DELETE FROM uploads WHERE id = ?", req.UploadID)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2568,6 +3120,13 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filename = storage.SanitizeFilename(filename)
+
+	if err := s.sm.CheckDiskSpaceForNewUpload(size); err != nil {
+		w.WriteHeader(http.StatusInsufficientStorage)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
 	fileID := auth.GenerateRandomID(16)
 	finalPath := s.sm.GetShardedPath(fileID)
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0750); err != nil {
@@ -2638,8 +3197,19 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	expiryDays := 14
+	if expStr := r.FormValue("expiry_days"); expStr != "" {
+		if v, err := strconv.Atoi(expStr); err == nil && v > 0 {
+			expiryDays = v
+		}
+	} else if expStr := r.Header.Get("X-Expiry-Days"); expStr != "" {
+		if v, err := strconv.Atoi(expStr); err == nil && v > 0 {
+			expiryDays = v
+		}
+	}
+
 	now := time.Now().UTC()
-	expAt := now.Add(14 * 24 * time.Hour)
+	expAt := now.Add(time.Duration(expiryDays) * 24 * time.Hour)
 	storedRelPath, _ := filepath.Rel(s.cfg.DataDir, finalPath)
 	if storedRelPath == "" {
 		storedRelPath = filepath.Base(finalPath)
@@ -2656,8 +3226,10 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	var pID int64
 	if person != nil {
 		pID = person.ID
+	} else if admin != nil || (sess != nil && sess.IsAdmin) {
+		pID = 0
 	} else {
-		pID = s.getDefaultPersonID()
+		pID = 0
 	}
 
 	_, err = s.db.Exec(`
@@ -2671,6 +3243,16 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = s.tm.RecordUploadCompleted(pID, size, s.netChecker.IsLocal(r))
+	if person != nil {
+		s.auditLog.Log("person", person.ID, "upload_file", "file", fileID, clientIP, fmt.Sprintf("Uploaded '%s' (%s)", filename, formatBytes(size)))
+	} else if admin != nil {
+		s.auditLog.Log("admin", admin.ID, "upload_file", "file", fileID, clientIP, fmt.Sprintf("Admin uploaded '%s' (%s)", filename, formatBytes(size)))
+	}
+	if flagged {
+		s.auditLog.Log("system", 0, "file_quarantined", "file", fileID, clientIP, fmt.Sprintf("Quarantined '%s': %s", filename, flagReason))
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":             fileID,
 		"original_name":  filename,
@@ -2682,4 +3264,182 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		"created_at":     now.Format(time.RFC3339),
 		"uploader_label": uploaderName,
 	})
+}
+
+func (s *Server) handleAPIFilesDelete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	sess, person, admin := s.getSession(r)
+	if sess == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	fileID := strings.TrimPrefix(r.URL.Path, "/api/files/delete/")
+	fileID = strings.TrimPrefix(fileID, "/")
+	if fileID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing file ID"})
+		return
+	}
+
+	var f models.FileRecord
+	err := s.db.QueryRow("SELECT id, person_id, stored_path, protected FROM files WHERE id = ?", fileID).Scan(&f.ID, &f.PersonID, &f.StoredPath, &f.Protected)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "File not found"})
+		return
+	}
+
+	isAdminSession := (admin != nil) || (sess != nil && sess.IsAdmin)
+	if !isAdminSession {
+		if person == nil || person.ID == 0 || f.PersonID != person.ID || f.Protected {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden: Вы можете удалять только свои собственные файлы"})
+			return
+		}
+	}
+
+	_ = s.sm.DeleteFile(f.StoredPath)
+	_, _ = s.db.Exec("DELETE FROM files WHERE id = ?", f.ID)
+
+	clientIP := netutils.GetClientIP(r)
+	if person != nil {
+		s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, clientIP, "User deleted file via API")
+	} else if admin != nil {
+		s.auditLog.Log("admin", admin.ID, "delete_file", "file", fileID, clientIP, "Admin deleted file via API")
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "File deleted"})
+}
+
+func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	var req struct {
+		Code       string `json:"code"`
+		DeviceName string `json:"device_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	code := auth.NormalizeInviteCode(req.Code)
+	if code == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Код инвайта обязателен"})
+		return
+	}
+
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "Браузер " + r.UserAgent()
+	}
+	if len(deviceName) > 50 {
+		deviceName = deviceName[:50]
+	}
+
+	clientIP := netutils.GetClientIP(r)
+	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
+	rawCodeHash := auth.HashWithSalt(strings.TrimSpace(req.Code), s.cfg.Secrets.IPHashSalt)
+	now := time.Now().UTC()
+
+	var inv models.InviteCode
+	err := s.db.QueryRow(`
+		SELECT id, person_id, enabled, max_activations, activations_used, expires_at
+		FROM invite_codes WHERE code_hash = ? OR code_hash = ?
+	`, codeHash, rawCodeHash).Scan(&inv.ID, &inv.PersonID, &inv.Enabled, &inv.MaxActivations, &inv.ActivationsUsed, &inv.ExpiresAt)
+
+	if err != nil {
+		log.Printf("[Invite Failure] Code not found. Raw: %q, Normalized: %q, IP: %s", req.Code, code, clientIP)
+		s.securityLog.LogEvent("invite_failed", clientIP, "code not found")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Неверный инвайт-код"})
+		return
+	}
+
+	if !inv.Enabled {
+		log.Printf("[Invite Failure] Code ID %d is disabled", inv.ID)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Данный инвайт-код деактивирован администратором"})
+		return
+	}
+
+	if inv.ActivationsUsed >= inv.MaxActivations {
+		log.Printf("[Invite Failure] Code ID %d max activations reached (%d/%d)", inv.ID, inv.ActivationsUsed, inv.MaxActivations)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Превышено количество активаций этого кода"})
+		return
+	}
+
+	if now.After(inv.ExpiresAt) {
+		log.Printf("[Invite Failure] Code ID %d expired at %v (now %v)", inv.ID, inv.ExpiresAt, now)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Срок действия инвайт-кода истек"})
+		return
+	}
+
+	_, _ = s.db.Exec("UPDATE invite_codes SET activations_used = activations_used + 1 WHERE id = ?", inv.ID)
+
+	token := auth.GenerateRandomToken(32)
+	tokenHash := auth.HashWithSalt(token, s.cfg.Secrets.SessionSecret)
+	idleExpires := now.Add(30 * 24 * time.Hour)
+	absExpires := now.Add(90 * 24 * time.Hour)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPHashSalt)
+
+	_, err = s.db.Exec(`
+		INSERT INTO device_sessions (person_id, is_admin, name, session_token_hash, created_at, last_used_at, last_ip_hash, last_user_agent_hash, idle_expires_at, absolute_expires_at, revoked)
+		VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+	`, inv.PersonID, deviceName, tokenHash, now, now, ipHash, uaHash, idleExpires, absExpires)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "homeshare_session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil,
+	})
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"message":       "Инвайт успешно активирован!",
+		"session_token": token,
+	})
+}
+
+func parseTimeStr(v interface{}) string {
+	if v == nil {
+		return time.Now().UTC().Format(time.RFC3339)
+	}
+	switch val := v.(type) {
+	case time.Time:
+		return val.Format(time.RFC3339)
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

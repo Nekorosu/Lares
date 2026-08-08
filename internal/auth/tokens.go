@@ -58,3 +58,32 @@ func FormatCodePrefix(code string) string {
 	}
 	return "xxxx..."
 }
+
+func NormalizeInviteCode(c string) string {
+	c = strings.ToUpper(strings.TrimSpace(c))
+
+	cyrToLat := map[rune]rune{
+		'А': 'A', 'В': 'B', 'С': 'C', 'Е': 'E', 'Н': 'H',
+		'К': 'K', 'М': 'M', 'О': 'O', 'Р': 'P', 'Т': 'T',
+		'Х': 'X', 'У': 'Y', 'а': 'A', 'в': 'B', 'с': 'C',
+		'е': 'E', 'н': 'H', 'к': 'K', 'м': 'M', 'о': 'O',
+		'р': 'P', 'т': 'T', 'х': 'X', 'у': 'Y',
+	}
+
+	var sb strings.Builder
+	for _, r := range c {
+		if lat, ok := cyrToLat[r]; ok {
+			sb.WriteRune(lat)
+		} else {
+			sb.WriteRune(r)
+		}
+	}
+	c = sb.String()
+	c = strings.ReplaceAll(c, " ", "")
+	c = strings.ReplaceAll(c, "-", "")
+
+	if len(c) == 16 {
+		return fmt.Sprintf("%s-%s-%s-%s", c[0:4], c[4:8], c[8:12], c[12:16])
+	}
+	return c
+}

@@ -119,6 +119,40 @@ func (w *Worker) RunCleanup() {
 		}
 	}
 
+	// 2b. If critical disk space deficit (< critical_free_space_gb), purge active uploads immediately
+	if err := w.sm.CheckDiskSpaceCritical(); err != nil {
+		log.Printf("[Cleanup WARNING] Critical disk space deficit detected (%v). Aborting active uploads...", err)
+		critRows, err := w.db.Query(`
+			SELECT id, person_id, received_bytes
+			FROM uploads
+			WHERE status IN ('reserved', 'uploading')
+		`)
+		if err == nil {
+			type activeUpload struct {
+				id            string
+				personID      int64
+				receivedBytes int64
+			}
+			var critUps []activeUpload
+			for critRows.Next() {
+				var u activeUpload
+				if err := critRows.Scan(&u.id, &u.personID, &u.receivedBytes); err == nil {
+					critUps = append(critUps, u)
+				}
+			}
+			critRows.Close()
+
+			for _, u := range critUps {
+				w.sm.DeletePartFile(u.id)
+				_, _ = w.db.Exec("UPDATE uploads SET status = 'aborted' WHERE id = ?", u.id)
+				if u.receivedBytes > 0 {
+					_ = w.tm.RecordUploadAborted(u.personID, u.receivedBytes, false)
+				}
+				log.Printf("[Cleanup WARNING] Aborted active upload %s due to critical disk space", u.id)
+			}
+		}
+	}
+
 	// 3. Mark revoked/expired sessions
 	_, _ = w.db.Exec(`
 		UPDATE device_sessions
