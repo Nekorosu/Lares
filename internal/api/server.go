@@ -33,7 +33,6 @@ import (
 	"lares/web"
 )
 
-
 type Server struct {
 	cfg         *config.Config
 	configPath  string
@@ -147,7 +146,6 @@ func (s *Server) renderTemplate(w http.ResponseWriter, pageName string, data int
 		log.Printf("[Template Error] %v", err)
 	}
 }
-
 
 func findDistDir() string {
 	candidates := []string{
@@ -301,8 +299,6 @@ func (s *Server) getSession(r *http.Request) (*models.DeviceSession, *models.Per
 		tokenStr = cookie.Value
 	} else if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 		tokenStr = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-	} else if queryToken := r.URL.Query().Get("token"); queryToken != "" {
-		tokenStr = queryToken
 	}
 
 	if tokenStr == "" {
@@ -316,11 +312,25 @@ func (s *Server) getSession(r *http.Request) (*models.DeviceSession, *models.Per
 	var p models.Person
 	var admin models.AdminUser
 
+	var pID sql.NullInt64
+	var aID sql.NullInt64
+	var absExp sql.NullTime
+
 	err = s.db.QueryRow(`
 		SELECT id, person_id, admin_id, is_admin, name, idle_expires_at, absolute_expires_at, revoked
 		FROM device_sessions
 		WHERE session_token_hash = ? AND revoked = 0
-	`, tokenHash).Scan(&sess.ID, &sess.PersonID, &sess.AdminID, &sess.IsAdmin, &sess.Name, &sess.IdleExpiresAt, &sess.AbsoluteExpiresAt, &sess.Revoked)
+	`, tokenHash).Scan(&sess.ID, &pID, &aID, &sess.IsAdmin, &sess.Name, &sess.IdleExpiresAt, &absExp, &sess.Revoked)
+
+	if pID.Valid {
+		sess.PersonID = &pID.Int64
+	}
+	if aID.Valid {
+		sess.AdminID = &aID.Int64
+	}
+	if absExp.Valid {
+		sess.AbsoluteExpiresAt = &absExp.Time
+	}
 
 	if err != nil {
 		return nil, nil, nil
@@ -400,7 +410,7 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "GET" {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Активация инвайта", "Page": "login", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Активация инвайта", "Page": "login", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
@@ -429,7 +439,7 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		s.rateLimiter.Lock("invite_lock_"+clientIP, "invite_failed", "Неверный или просроченный инвайт-код", 15*time.Minute)
 
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Ошибка входа", "Error": "Неверный, использованный или просроченный инвайт-код", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Ошибка входа", "Error": "Неверный, использованный или просроченный инвайт-код", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
@@ -438,7 +448,7 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	err = s.db.QueryRow("SELECT id, session_idle_days, session_absolute_days FROM people WHERE id = ? AND enabled = 1", inv.PersonID).Scan(&person.ID, &person.SessionIdleDays, &person.SessionAbsoluteDays)
 	if err != nil {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Ошибка", "Error": "Пользователь заблокирован администратором", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Ошибка", "Error": "Пользователь заблокирован администратором", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
@@ -490,7 +500,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "GET" {
 		s.renderTemplate(w, "admin_login.html", map[string]interface{}{
-			"Title": "Вход администратора", "Page": "admin_login", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Вход администратора", "Page": "admin_login", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
@@ -499,7 +509,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	totpCode := strings.TrimSpace(r.FormValue("totp_code"))
 
-	lockKey := fmt.Sprintf("admin_lock_%s_%s", username, clientIP)
+	lockKey := fmt.Sprintf("admin_lock_%s", clientIP)
 	if locked, remaining, reason := s.rateLimiter.IsLocked(lockKey); locked {
 		s.securityLog.LogEvent("admin_login_failed", clientIP, "locked username="+username)
 		ratelimit.SetRetryAfterHeader(w, int(remaining.Seconds()))
@@ -517,7 +527,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			_ = s.rateLimiter.Lock(lockKey, "admin_failed", "Слишком много неудачных попыток входа", 15*time.Minute)
 		}
 		s.renderTemplate(w, "admin_login.html", map[string]interface{}{
-			"Title": "Ошибка входа", "Error": "Неверное имя пользователя, пароль или TOTP-код", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Ошибка входа", "Error": "Неверное имя пользователя, пароль или TOTP-код", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
@@ -529,7 +539,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			_ = s.rateLimiter.Lock(lockKey, "admin_failed", "Слишком много неудачных попыток входа", 15*time.Minute)
 		}
 		s.renderTemplate(w, "admin_login.html", map[string]interface{}{
-			"Title": "Ошибка входа", "Error": "Неверное имя пользователя, пароль или TOTP-код", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Ошибка входа", "Error": "Неверное имя пользователя, пароль или TOTP-код", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
@@ -541,13 +551,12 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			_ = s.rateLimiter.Lock(lockKey, "admin_totp_failed", "Слишком много неудачных попыток входа", 15*time.Minute)
 		}
 		s.renderTemplate(w, "admin_login.html", map[string]interface{}{
-			"Title": "Ошибка входа", "Error": "Неверный 6-значный TOTP-код", "CSRFToken": s.generateCSRFToken(),
+			"Title": "Ошибка входа", "Error": "Неверный 6-значный TOTP-код", "CSRFToken": s.generateCSRFToken(w, r),
 		})
 		return
 	}
 
 	_ = s.rateLimiter.Unlock(lockKey)
-
 
 	// Success -> Create Admin DeviceSession
 	token := auth.GenerateRandomToken(32)
@@ -566,13 +575,11 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		VALUES (NULL, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0)
 	`, admin.ID, "Admin Session", tokenHash, now, now, ipHash, uaHash, idleExpires, absExpires)
 
-
 	if err != nil {
 		log.Printf("[Session Error] Failed to insert admin session: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create session: %v", err), http.StatusInternalServerError)
 		return
 	}
-
 
 	s.auditLog.Log("admin", admin.ID, "admin_login", "admin_user", fmt.Sprintf("%d", admin.ID), clientIP, "Admin logged in successfully")
 
@@ -723,7 +730,7 @@ func (s *Server) handleUserDashboard(w http.ResponseWriter, r *http.Request) {
 		"Title":                  "Файлообменник",
 		"Page":                   "home",
 		"User":                   person,
-		"CSRFToken":              s.generateCSRFToken(),
+		"CSRFToken":              s.generateCSRFToken(w, r),
 		"StorageUsedFormatted":   formatBytes(storageUsed),
 		"StorageQuotaFormatted":  formatBytes(person.StorageQuotaBytes),
 		"StoragePercent":         fmt.Sprintf("%.1f", storagePercent),
@@ -738,7 +745,6 @@ func (s *Server) handleUserDashboard(w http.ResponseWriter, r *http.Request) {
 		"QuarantinedFiles":       qFiles,
 	})
 }
-
 
 // User Delete Own File
 func (s *Server) handleUserDeleteFile(w http.ResponseWriter, r *http.Request) {
@@ -774,6 +780,39 @@ func (s *Server) handleUserDeleteFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // Chunked Upload API - Step 1: POST /api/uploads
+func (s *Server) checkUploadPolicy(person *models.Person, size int64, isLocal bool) error {
+	if person == nil {
+		return fmt.Errorf("Unauthorized")
+	}
+	if size > person.MaxFileSizeBytes {
+		return fmt.Errorf("Размер файла превышает максимально допустимый")
+	}
+	var activeCount int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM uploads WHERE person_id = ? AND status IN ('reserved', 'uploading')", person.ID).Scan(&activeCount)
+	if activeCount >= person.MaxConcurrentUploads {
+		return fmt.Errorf("Превышено количество одновременных загрузок")
+	}
+	var currentStorageUsed int64
+	_ = s.db.QueryRow("SELECT COALESCE(SUM(size), 0) FROM files WHERE person_id = ? AND status = 'ready'", person.ID).Scan(&currentStorageUsed)
+	var reservedUploadsUsed int64
+	_ = s.db.QueryRow("SELECT COALESCE(SUM(declared_size - received_bytes), 0) FROM uploads WHERE person_id = ? AND status IN ('reserved', 'uploading')", person.ID).Scan(&reservedUploadsUsed)
+	if (currentStorageUsed + reservedUploadsUsed + size) > person.StorageQuotaBytes {
+		return fmt.Errorf("Недостаточно места в вашей квоте хранилища")
+	}
+	if !isLocal {
+		month := traffic.GetCurrentMonth()
+		var monthlyUploadUsed int64
+		_ = s.db.QueryRow("SELECT upload_completed_bytes + upload_aborted_bytes FROM traffic_counters WHERE person_id = ? AND month = ?", person.ID, month).Scan(&monthlyUploadUsed)
+		if (monthlyUploadUsed + size) > person.MonthlyUploadLimitBytes {
+			return fmt.Errorf("Превышен месячный лимит загрузок")
+		}
+	}
+	if err := s.sm.CheckDiskSpaceForNewUpload(size); err != nil {
+		return fmt.Errorf("Критическая нехватка места на сервере")
+	}
+	return nil
+}
+
 func (s *Server) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
 	sess, person, _ := s.getSession(r)
 	if sess == nil || person == nil {
@@ -894,6 +933,25 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 	secret := r.Header.Get("X-Upload-Secret")
 	if auth.HashWithSalt(secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
 		http.Error(w, `{"error":"Invalid upload secret"}`, http.StatusForbidden)
+		return
+	}
+
+	sess, person, admin := s.getSession(r)
+	if sess == nil && person == nil && admin == nil {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	if u.PersonID != 0 {
+		if person == nil || person.ID != u.PersonID {
+			http.Error(w, `{"error":"Unauthorized: Person mismatch"}`, http.StatusForbidden)
+			return
+		}
+		if u.SessionID != 0 && sess != nil && u.SessionID != sess.ID {
+			http.Error(w, `{"error":"Unauthorized: Session mismatch"}`, http.StatusForbidden)
+			return
+		}
+	} else if admin == nil && (sess == nil || !sess.IsAdmin) {
+		http.Error(w, `{"error":"Unauthorized: Admin required"}`, http.StatusForbidden)
 		return
 	}
 
@@ -1120,7 +1178,6 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-
 // Preview Safe Media Types
 func isPreviewableType(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -1266,18 +1323,18 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_dashboard.html", map[string]interface{}{
-		"Title":                 "Админ Панель",
-		"Page":                  "dashboard",
-		"IsAdmin":               true,
-		"FreeSpaceFormatted":    formatBytes(freeBytes),
-		"TotalSpaceFormatted":   formatBytes(totalBytes),
-		"FreeInodes":            freeInodes,
-		"UploadSpeedFormatted":  formatBps(upBps),
+		"Title":                  "Админ Панель",
+		"Page":                   "dashboard",
+		"IsAdmin":                true,
+		"FreeSpaceFormatted":     formatBytes(freeBytes),
+		"TotalSpaceFormatted":    formatBytes(totalBytes),
+		"FreeInodes":             freeInodes,
+		"UploadSpeedFormatted":   formatBps(upBps),
 		"DownloadSpeedFormatted": formatBps(downBps),
-		"ActiveSessionsCount":  activeSessions,
-		"ActiveUploadsCount":   activeUploads,
-		"QuarantineCount":      quarantineCount,
-		"RecentAuditLogs":      logs,
+		"ActiveSessionsCount":    activeSessions,
+		"ActiveUploadsCount":     activeUploads,
+		"QuarantineCount":        quarantineCount,
+		"RecentAuditLogs":        logs,
 	})
 }
 
@@ -1312,7 +1369,7 @@ func (s *Server) handleAdminPeople(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_people.html", map[string]interface{}{
-		"Title": "Пользователи", "Page": "people", "IsAdmin": true, "People": people, "CSRFToken": s.generateCSRFToken(),
+		"Title": "Пользователи", "Page": "people", "IsAdmin": true, "People": people, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1416,7 +1473,7 @@ func (s *Server) handleAdminInvites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_invites.html", map[string]interface{}{
-		"Title": "Инвайты", "Page": "invites", "IsAdmin": true, "People": people, "Invites": invites, "CSRFToken": s.generateCSRFToken(),
+		"Title": "Инвайты", "Page": "invites", "IsAdmin": true, "People": people, "Invites": invites, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1460,7 +1517,7 @@ func (s *Server) handleAdminInvitesCreate(w http.ResponseWriter, r *http.Request
 
 	s.renderTemplate(w, "admin_invites.html", map[string]interface{}{
 		"Title": "Инвайт создан", "Page": "invites", "IsAdmin": true, "People": people,
-		"NewInviteCode": code, "NewInviteQRData": qrBase64, "CSRFToken": s.generateCSRFToken(),
+		"NewInviteCode": code, "NewInviteQRData": qrBase64, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1481,7 +1538,6 @@ func (s *Server) handleAdminSessions(w http.ResponseWriter, r *http.Request) {
 		FROM device_sessions s LEFT JOIN people p ON s.person_id = p.id
 		WHERE s.revoked = 0 ORDER BY s.last_used_at DESC
 	`)
-
 
 	type sessionItem struct {
 		ID                       int64
@@ -1517,7 +1573,7 @@ func (s *Server) handleAdminSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_sessions.html", map[string]interface{}{
-		"Title": "Сессии", "Page": "sessions", "IsAdmin": true, "Sessions": sessions, "CSRFToken": s.generateCSRFToken(),
+		"Title": "Сессии", "Page": "sessions", "IsAdmin": true, "Sessions": sessions, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1601,7 +1657,7 @@ func (s *Server) handleAdminFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_files.html", map[string]interface{}{
-		"Title": "Файлы", "Page": "files", "IsAdmin": true, "Files": files, "SearchQuery": q, "StatusFilter": status, "CSRFToken": s.generateCSRFToken(),
+		"Title": "Файлы", "Page": "files", "IsAdmin": true, "Files": files, "SearchQuery": q, "StatusFilter": status, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1668,7 +1724,7 @@ func (s *Server) handleAdminQuarantine(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_quarantine.html", map[string]interface{}{
-		"Title": "Карантин", "Page": "quarantine", "IsAdmin": true, "Files": files, "CSRFToken": s.generateCSRFToken(),
+		"Title": "Карантин", "Page": "quarantine", "IsAdmin": true, "Files": files, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1695,12 +1751,12 @@ func (s *Server) handleAdminTraffic(w http.ResponseWriter, r *http.Request) {
 	`, currentMonth)
 
 	type trafficItem struct {
-		PersonID                  int64
-		PersonLabel               string
-		UploadCompletedFormatted  string
-		UploadAbortedFormatted    string
-		UploadEffectiveFormatted  string
-		UploadLimitFormatted      string
+		PersonID                   int64
+		PersonLabel                string
+		UploadCompletedFormatted   string
+		UploadAbortedFormatted     string
+		UploadEffectiveFormatted   string
+		UploadLimitFormatted       string
 		DownloadCompletedFormatted string
 		DownloadAbortedFormatted   string
 		DownloadEffectiveFormatted string
@@ -1734,7 +1790,7 @@ func (s *Server) handleAdminTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "admin_traffic.html", map[string]interface{}{
-		"Title": "Трафик", "Page": "traffic", "IsAdmin": true, "CurrentMonth": currentMonth, "CurrentTraffic": list, "CSRFToken": s.generateCSRFToken(),
+		"Title": "Трафик", "Page": "traffic", "IsAdmin": true, "CurrentMonth": currentMonth, "CurrentTraffic": list, "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
 
@@ -1773,10 +1829,9 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 
 	s.renderTemplate(w, "admin_settings.html", map[string]interface{}{
 		"Title": "Настройки", "Page": "settings", "IsAdmin": true, "Config": s.cfg, "Locks": locks,
-		"SuspiciousExtensionsStr": strings.Join(s.cfg.SuspiciousExtensions, ", "), "CSRFToken": s.generateCSRFToken(),
+		"SuspiciousExtensionsStr": strings.Join(s.cfg.SuspiciousExtensions, ", "), "CSRFToken": s.generateCSRFToken(w, r),
 	})
 }
-
 
 func (s *Server) handleAdminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1829,8 +1884,21 @@ func (s *Server) handleAdminLocksClearAll(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }
 
-func (s *Server) generateCSRFToken() string {
-	return auth.GenerateRandomToken(16)
+func (s *Server) generateCSRFToken(w http.ResponseWriter, r *http.Request) string {
+	cookie, err := r.Cookie("homeshare_csrf")
+	if err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	token := auth.GenerateRandomToken(32)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "homeshare_csrf",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   strings.HasPrefix(s.cfg.BaseURL, "https://"),
+		SameSite: http.SameSiteLaxMode,
+	})
+	return token
 }
 
 func formatBytes(b int64) string {
@@ -1887,7 +1955,7 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP := netutils.GetClientIP(r)
-	lockKey := fmt.Sprintf("admin_lock_%s_%s", username, clientIP)
+	lockKey := fmt.Sprintf("admin_lock_%s", clientIP)
 	if locked, remaining, reason := s.rateLimiter.IsLocked(lockKey); locked {
 		s.securityLog.LogEvent("admin_login_failed", clientIP, "locked username="+username)
 		ratelimit.SetRetryAfterHeader(w, int(remaining.Seconds()))
@@ -2005,7 +2073,7 @@ func (s *Server) handleAPIAuthMe(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"authenticated": true,
 		"role":          "user",
-		"person_id":      pID,
+		"person_id":     pID,
 		"username":      username,
 	})
 }
@@ -2083,33 +2151,33 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 			"files_count":      filesCount,
 			"free_disk_bytes":  freeDiskBytes,
 			"total_disk_bytes": totalDiskBytes,
-			"free_inodes":     freeInodes,
+			"free_inodes":      freeInodes,
 		},
 		"user_quota": map[string]interface{}{
-			"label":                 userLabel,
-			"used_bytes":            userUsedBytes,
-			"quota_bytes":           userQuotaBytes,
-			"upload_used_bytes":     userUploadBytes,
-			"external_upload_bytes": extUp,
-			"local_upload_bytes":    locUp,
-			"upload_limit_bytes":    userUploadLimitBytes,
-			"download_used_bytes":   userDownloadBytes,
+			"label":                   userLabel,
+			"used_bytes":              userUsedBytes,
+			"quota_bytes":             userQuotaBytes,
+			"upload_used_bytes":       userUploadBytes,
+			"external_upload_bytes":   extUp,
+			"local_upload_bytes":      locUp,
+			"upload_limit_bytes":      userUploadLimitBytes,
+			"download_used_bytes":     userDownloadBytes,
 			"external_download_bytes": extDown,
-			"local_download_bytes":  locDown,
-			"download_limit_bytes":  userDownloadLimitBytes,
-			"max_file_size_bytes":   userMaxFileSizeBytes,
+			"local_download_bytes":    locDown,
+			"download_limit_bytes":    userDownloadLimitBytes,
+			"max_file_size_bytes":     userMaxFileSizeBytes,
 		},
 		"traffic": map[string]interface{}{
-			"month":                  month,
-			"external_upload_bytes":  uploadCompleted,
+			"month":                   month,
+			"external_upload_bytes":   uploadCompleted,
 			"external_download_bytes": downloadCompleted,
-			"external_total_bytes":   uploadCompleted + downloadCompleted,
-			"local_upload_bytes":     localUpload,
-			"local_download_bytes":   localDownload,
-			"local_total_bytes":      localUpload + localDownload,
-			"total_bytes":            uploadCompleted + downloadCompleted + localUpload + localDownload,
-			"upload_bytes":           uploadCompleted + localUpload,
-			"download_bytes":         downloadCompleted + localDownload,
+			"external_total_bytes":    uploadCompleted + downloadCompleted,
+			"local_upload_bytes":      localUpload,
+			"local_download_bytes":    localDownload,
+			"local_total_bytes":       localUpload + localDownload,
+			"total_bytes":             uploadCompleted + downloadCompleted + localUpload + localDownload,
+			"upload_bytes":            uploadCompleted + localUpload,
+			"download_bytes":          downloadCompleted + localDownload,
 		},
 		"active_sessions":  activeSessions,
 		"quarantine_count": quarantineCount,
@@ -2465,15 +2533,15 @@ func (s *Server) handleAPIAdminPeople(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		_ = rows.Scan(&id, &label, &notes, &enabled, &quota, &upLim, &downLim, &maxFile, &createdAt)
 		list = append(list, map[string]interface{}{
-			"id":                          id,
-			"label":                       label,
-			"notes":                       notes,
-			"enabled":                     enabled,
-			"storage_quota_bytes":         quota,
+			"id":                           id,
+			"label":                        label,
+			"notes":                        notes,
+			"enabled":                      enabled,
+			"storage_quota_bytes":          quota,
 			"monthly_upload_limit_bytes":   upLim,
 			"monthly_download_limit_bytes": downLim,
-			"max_file_size_bytes":         maxFile,
-			"created_at":                  createdAt.Format(time.RFC3339),
+			"max_file_size_bytes":          maxFile,
+			"created_at":                   createdAt.Format(time.RFC3339),
 		})
 	}
 	if list == nil {
@@ -2719,7 +2787,7 @@ func (s *Server) handleAPIAdminSettings(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (s *Server) validateCSRFToken(r *http.Request, sess *models.DeviceSession) bool {
+func (s *Server) validateCSRFToken(r *http.Request) bool {
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return true
@@ -2733,18 +2801,29 @@ func (s *Server) validateCSRFToken(r *http.Request, sess *models.DeviceSession) 
 		return false
 	}
 
-	var expectedToken string
-	if sess != nil {
-		expectedToken = auth.HashWithSalt(fmt.Sprintf("csrf_%d_%s", sess.ID, sess.CreatedAt.Format(time.RFC3339)), s.cfg.Secrets.SessionSecret)[:32]
-	} else {
-		cookie, err := r.Cookie("homeshare_csrf")
-		if err != nil || cookie.Value == "" {
-			return false
-		}
-		expectedToken = cookie.Value
+	cookie, err := r.Cookie("homeshare_csrf")
+	if err != nil || cookie.Value == "" {
+		return false
 	}
+	expectedToken := cookie.Value
 
 	return subtle.ConstantTimeCompare([]byte(givenToken), []byte(expectedToken)) == 1
+}
+
+func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
+			if !s.validateCSRFToken(r) {
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid CSRF Token"})
+				return
+			}
+		} else if r.Method == "GET" {
+			// Ensure cookie is set for SPA and HTML pages
+			s.generateCSRFToken(w, r)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) getDefaultPersonID() int64 {
@@ -2770,6 +2849,13 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	sess, person, admin := s.getSession(r)
+	if sess == nil && person == nil && admin == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
 		return
 	}
 
@@ -2803,7 +2889,6 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 		expiryDays = 14
 	}
 
-	sess, person, admin := s.getSession(r)
 	var personID int64
 	if person != nil {
 		personID = person.ID
@@ -2811,12 +2896,6 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 		personID = 0
 	} else {
 		personID = 0
-	}
-
-	if err := s.sm.CheckDiskSpaceForNewUpload(size); err != nil {
-		w.WriteHeader(http.StatusInsufficientStorage)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
 	}
 
 	uploadID := auth.GenerateRandomID(16)
@@ -2870,15 +2949,16 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 	var u struct {
 		ID               string
 		PersonID         int64
+		SessionID        sql.NullInt64
 		UploadSecretHash string
 		OriginalName     string
 		DeclaredSize     int64
 		ReceivedBytes    int64
 	}
 	err := s.db.QueryRow(`
-		SELECT id, person_id, upload_secret_hash, original_name, declared_size, received_bytes
+		SELECT id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes
 		FROM uploads WHERE id = ?
-	`, uploadID).Scan(&u.ID, &u.PersonID, &u.UploadSecretHash, &u.OriginalName, &u.DeclaredSize, &u.ReceivedBytes)
+	`, uploadID).Scan(&u.ID, &u.PersonID, &u.SessionID, &u.UploadSecretHash, &u.OriginalName, &u.DeclaredSize, &u.ReceivedBytes)
 
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -2900,6 +2980,29 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 	if auth.HashWithSalt(secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
+		return
+	}
+
+	sess, person, admin := s.getSession(r)
+	if sess == nil && person == nil && admin == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if u.PersonID != 0 {
+		if person == nil || person.ID != u.PersonID {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Person mismatch"})
+			return
+		}
+		if u.SessionID.Valid && u.SessionID.Int64 != 0 && sess != nil && u.SessionID.Int64 != sess.ID {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Session mismatch"})
+			return
+		}
+	} else if admin == nil && (sess == nil || !sess.IsAdmin) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Admin required"})
 		return
 	}
 
@@ -3097,6 +3200,13 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sess, person, admin := s.getSession(r)
+	if sess == nil && person == nil && admin == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
 	file, header, err := r.FormFile("file")
 	var filename string
 	var size int64
@@ -3120,11 +3230,25 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filename = storage.SanitizeFilename(filename)
+	isLocal := s.netChecker.IsLocal(r)
 
-	if err := s.sm.CheckDiskSpaceForNewUpload(size); err != nil {
-		w.WriteHeader(http.StatusInsufficientStorage)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
+	if person != nil {
+		if err := s.checkUploadPolicy(person, size, isLocal); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	} else {
+		if err := s.sm.CheckDiskSpaceForNewUpload(size); err != nil {
+			w.WriteHeader(http.StatusInsufficientStorage)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	// Bounded request body
+	if size > 0 {
+		reader = io.LimitReader(reader, size)
 	}
 
 	fileID := auth.GenerateRandomID(16)
@@ -3154,7 +3278,6 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		size = written
 	}
 
-	sess, person, admin := s.getSession(r)
 	uploaderName := "Пользователь Web"
 	if person != nil {
 		uploaderName = person.Label
@@ -3327,6 +3450,16 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	clientIP := netutils.GetClientIP(r)
+
+	if locked, remaining, reason := s.rateLimiter.IsLocked("invite_lock_" + clientIP); locked {
+		s.securityLog.LogEvent("invite_failed", clientIP, "ip rate locked: "+reason)
+		ratelimit.SetRetryAfterHeader(w, int(remaining.Seconds()))
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Доступ временно заблокирован: %s", reason)})
+		return
+	}
+
 	var req struct {
 		Code       string `json:"code"`
 		DeviceName string `json:"device_name"`
@@ -3352,7 +3485,6 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 		deviceName = deviceName[:50]
 	}
 
-	clientIP := netutils.GetClientIP(r)
 	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
 	rawCodeHash := auth.HashWithSalt(strings.TrimSpace(req.Code), s.cfg.Secrets.IPHashSalt)
 	now := time.Now().UTC()

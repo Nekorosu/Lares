@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
@@ -40,7 +41,7 @@ func ValidateTOTP(secret, passcode string) bool {
 	// Check current time step and +/- 2 window for clock drift tolerance
 	for _, offset := range []int64{-2, -1, 0, 1, 2} {
 		t := (now / step) + offset
-		if generateCode(key, t) == passcode {
+		if subtle.ConstantTimeCompare([]byte(generateCode(key, t)), []byte(passcode)) == 1 {
 			return true
 		}
 	}

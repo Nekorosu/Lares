@@ -16,7 +16,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
-ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/homeshare /etc/homeshare
+ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/homeshare /etc/homeshare /tmp /var/tmp
 
 # Limits
 LimitNOFILE=65536

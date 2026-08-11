@@ -45,7 +45,7 @@ git clone https://github.com/your-username/lares.git
 cd lares
 
 # Скомпилируйте исполняемый Go-файл
-go build -o lares main.go
+go build -o homeshare ./cmd/homeshare
 ```
 
 ### 2. Подготовка каталогов на сервере
@@ -106,7 +106,7 @@ speed_limits:
 
 ```bash
 # Переместите бинарник в системную директорию
-sudo cp lares /usr/local/bin/lares
+sudo cp homeshare /usr/local/bin/homeshare
 
 # Скопируйте файл службы
 sudo cp lares.service /etc/systemd/system/
@@ -147,8 +147,10 @@ sudo systemctl reload caddy
 
 ```text
 .
-├── main.go               # Go-сервер (заглушка, основная логика в server.ts)
-├── server.ts             # Основной Node.js/Express сервер
+├── cmd/homeshare/main.go # Production entrypoint для Go сервера
+├── internal/             # Основная бизнес-логика Go сервера
+├── main.go               # [LEGACY] Устаревший Go-сервер
+├── server.ts             # [LEGACY] Устаревший Node.js/Express сервер
 ├── src/
 │   ├── App.tsx           # React SPA — основной интерфейс
 │   ├── components/       # React-компоненты

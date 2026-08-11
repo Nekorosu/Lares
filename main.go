@@ -418,7 +418,7 @@ func main() {
 	srv := &http.Server{
 		Addr:         listenAddr,
 		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout: 300 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}

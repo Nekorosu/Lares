@@ -44,7 +44,7 @@ func main() {
 	httpServer := &http.Server{
 		Addr:         cfg.Listen,
 		Handler:      server.Routes(),
-		ReadTimeout:  30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout: 60 * time.Minute, // Long timeout for large streaming uploads/downloads
 		IdleTimeout:  60 * time.Second,
 	}
