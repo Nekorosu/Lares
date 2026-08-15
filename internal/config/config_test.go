@@ -118,7 +118,7 @@ func TestGeneratedSecretsArePersistedInCanonicalSchema(t *testing.T) {
 	}
 }
 
-func TestLegacySchemaRequiresExplicitPath(t *testing.T) {
+func TestLegacySchemaCompatibilityDoesNotChangeDefaultPath(t *testing.T) {
 	legacyPath := filepath.Join(t.TempDir(), "homeshare.yaml")
 	legacy := `
 data_dir: /legacy/data

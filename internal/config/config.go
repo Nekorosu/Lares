@@ -129,8 +129,8 @@ func DefaultConfig() *Config {
 	}
 }
 
-// legacyConfig describes the pre-Lares flat schema. It is accepted only when
-// the caller explicitly loads that file; LoadConfig never searches legacy paths.
+// legacyConfig describes the pre-Lares flat schema. It is accepted inside the
+// selected config file, but LoadConfig never searches legacy filesystem paths.
 type legacyConfig struct {
 	DataDir     *string `yaml:"data_dir"`
 	TmpDir      *string `yaml:"tmp_dir"`
