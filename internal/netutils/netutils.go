@@ -10,13 +10,17 @@ type NetworkChecker struct {
 	localSubnets []*net.IPNet
 }
 
-func NewNetworkChecker(localCIDR string) (*NetworkChecker, error) {
+func NewNetworkChecker(localCIDRs ...string) (*NetworkChecker, error) {
 	checker := &NetworkChecker{}
-	if localCIDR != "" {
-		_, ipNet, err := net.ParseCIDR(localCIDR)
-		if err == nil {
-			checker.localSubnets = append(checker.localSubnets, ipNet)
+	for _, localCIDR := range localCIDRs {
+		if localCIDR == "" {
+			continue
 		}
+		_, ipNet, err := net.ParseCIDR(localCIDR)
+		if err != nil {
+			return nil, err
+		}
+		checker.localSubnets = append(checker.localSubnets, ipNet)
 	}
 	return checker, nil
 }

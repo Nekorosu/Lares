@@ -1,48 +1,58 @@
 listen: "127.0.0.1:8090"
 base_url: "https://files.example.duckdns.org"
 
-data_dir: "/srv/media/fileshare/data"
-tmp_dir: "/srv/media/fileshare/tmp"
-db_path: "/srv/media/fileshare/db/homeshare.db"
-backup_dir: "/home/fileshare-backup"
-log_dir: "/var/log/homeshare"
-security_log: "/var/log/homeshare/security.log"
+paths:
+  data_dir: "/srv/media/fileshare/data"
+  tmp_dir: "/srv/media/fileshare/tmp"
+  db_path: "/srv/media/fileshare/db/lares.db"
+  backup_dir: "/home/fileshare-backup"
+  security_log: "/var/log/lares/security.log"
 
-local_cidr: "192.168.32.0/24"
+network:
+  local_cidrs:
+    - "127.0.0.1/32"
+    - "::1/128"
+    - "192.168.32.0/24"
 
-# secrets:
-#   session_secret: "GENERATE_YOUR_OWN_SECRET_KEY"
-#   ip_hash_salt: "GENERATE_YOUR_OWN_IP_HASH_SALT"
-
-storage_defaults:
-  quota_bytes: 107374182400 # 100 GB
-  monthly_upload_limit: 214748364800 # 200 GB
-  monthly_download_limit: 322122547200 # 300 GB
-  max_file_size: 53687091200 # 50 GB
+limits:
+  default_storage_quota_gb: 100
+  default_monthly_upload_limit_gb: 200
+  default_monthly_download_limit_gb: 300
+  default_max_file_size_gb: 50
   max_concurrent_uploads: 1
   default_expiry_days: 14
   allow_user_keep_forever: false
   quarantine_suspicious: true
 
 speed_limits:
-  external_upload_mbps: 250
-  external_download_mbps: 250
+  external_upload_limit_mbps: 250
+  external_download_limit_mbps: 250
   burst_mb: 16
 
 zip_limits:
   max_files: 100
   max_total_gb: 50
 
-session_defaults:
+sessions:
   user_idle_days: 30
   user_absolute_days: 90
   admin_idle_hours: 12
   admin_absolute_days: 7
 
+invite_defaults:
+  expiry_days: 30
+  max_activations: 1
+
 disk_reserve:
   min_free_space_gb: 40
   critical_free_space_gb: 20
   min_free_inodes: 100000
+
+# Leave these empty on first install. Lares generates cryptographically random
+# values and atomically persists them to this file before starting.
+secrets:
+  session_secret: ""
+  ip_salt: ""
 
 suspicious_extensions:
   - exe

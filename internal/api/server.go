@@ -76,7 +76,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 
 func NewServer(cfg *config.Config, db *sql.DB) (*Server, error) {
 	sm, err := storage.NewStorageManager(
-		cfg.DataDir, cfg.TmpDir,
+		cfg.Paths.DataDir, cfg.Paths.TmpDir,
 		cfg.DiskReserve.MinFreeSpaceGB,
 		cfg.DiskReserve.CriticalFreeSpaceGB,
 		cfg.DiskReserve.MinFreeInodes,
@@ -85,12 +85,12 @@ func NewServer(cfg *config.Config, db *sql.DB) (*Server, error) {
 		return nil, err
 	}
 
-	netChecker, err := netutils.NewNetworkChecker(cfg.LocalCIDR)
+	netChecker, err := netutils.NewNetworkChecker(cfg.Network.LocalCIDRs...)
 	if err != nil {
 		return nil, err
 	}
 
-	secLogger, err := securitylog.NewLogger(cfg.SecurityLog)
+	secLogger, err := securitylog.NewLogger(cfg.Paths.SecurityLog)
 	if err != nil {
 		log.Printf("[Warning] Failed to initialize security logger: %v", err)
 	}
@@ -102,8 +102,8 @@ func NewServer(cfg *config.Config, db *sql.DB) (*Server, error) {
 		cfg.SpeedLimits.ExternalDownloadMbps,
 		cfg.SpeedLimits.BurstMB,
 	)
-	al := audit.NewLogger(db, cfg.Secrets.IPHashSalt)
-	cleaner := cleanup.NewWorker(db, sm, tm, cfg.BackupDir, cfg.SecurityLog)
+	al := audit.NewLogger(db, cfg.Secrets.IPSalt)
+	cleaner := cleanup.NewWorker(db, sm, tm, cfg.Paths.BackupDir, cfg.Paths.SecurityLog)
 
 	tmplMap, err := parseTemplates()
 	if err != nil {
@@ -112,7 +112,7 @@ func NewServer(cfg *config.Config, db *sql.DB) (*Server, error) {
 
 	srv := &Server{
 		cfg:         cfg,
-		configPath:  "config.yaml",
+		configPath:  cfg.LoadedFrom(),
 		db:          db,
 		sm:          sm,
 		tm:          tm,
@@ -135,6 +135,13 @@ func (s *Server) SetConfigPath(path string) {
 	}
 }
 
+func (s *Server) quarantineExtensions() []string {
+	if !s.cfg.Limits.QuarantineSuspicious {
+		return nil
+	}
+	return s.cfg.SuspiciousExtensions
+}
+
 func (s *Server) renderTemplate(w http.ResponseWriter, pageName string, data interface{}) {
 	tmpl, ok := s.templates[pageName]
 	if !ok {
@@ -149,8 +156,7 @@ func (s *Server) renderTemplate(w http.ResponseWriter, pageName string, data int
 
 func findDistDir() string {
 	candidates := []string{
-		"/srv/media/tmp/Lares/dist",
-		"/var/lib/homeshare/dist",
+		"/usr/local/share/lares/dist",
 		"./dist",
 		"../dist",
 	}
@@ -343,11 +349,11 @@ func (s *Server) getSession(r *http.Request) (*models.DeviceSession, *models.Per
 	}
 
 	// Touch last_used_at and update idle_expires_at
-	var idleDays int = 30
+	idleDuration := time.Duration(s.cfg.Sessions.UserIdleDays) * 24 * time.Hour
 	if sess.IsAdmin {
-		idleDays = 1
+		idleDuration = time.Duration(s.cfg.Sessions.AdminIdleHours) * time.Hour
 	}
-	newIdle := now.Add(time.Duration(idleDays) * 24 * time.Hour)
+	newIdle := now.Add(idleDuration)
 	_, _ = s.db.Exec("UPDATE device_sessions SET last_used_at = ?, idle_expires_at = ? WHERE id = ?", now, newIdle, sess.ID)
 
 	if sess.IsAdmin {
@@ -424,7 +430,7 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
+	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPSalt)
 	now := time.Now().UTC()
 
 	var inv models.InviteCode
@@ -467,8 +473,8 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		absExpires = &t
 	}
 
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
-	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
+	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPSalt)
 
 	_, err = s.db.Exec(`
 		INSERT INTO device_sessions (person_id, name, session_token_hash, created_at, last_used_at, last_ip_hash, last_user_agent_hash, idle_expires_at, absolute_expires_at, revoked)
@@ -563,11 +569,11 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	tokenHash := auth.HashWithSalt(token, s.cfg.Secrets.SessionSecret)
 
 	now := time.Now().UTC()
-	idleExpires := now.Add(12 * time.Hour)
-	absExpires := now.Add(7 * 24 * time.Hour)
+	idleExpires := now.Add(time.Duration(s.cfg.Sessions.AdminIdleHours) * time.Hour)
+	absExpires := now.Add(time.Duration(s.cfg.Sessions.AdminAbsoluteDays) * 24 * time.Hour)
 
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
-	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
+	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPSalt)
 
 	// Admin session uses NULL person_id
 	_, err = s.db.Exec(`
@@ -887,13 +893,13 @@ func (s *Server) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
 
 	uploadID := auth.GenerateRandomID(16)
 	secret := auth.GenerateRandomToken(32)
-	secretHash := auth.HashWithSalt(secret, s.cfg.Secrets.IPHashSalt)
+	secretHash := auth.HashWithSalt(secret, s.cfg.Secrets.IPSalt)
 
 	reservationExpires := time.Now().UTC().Add(24 * time.Hour) // Dynamic reservation TTL
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
 
 	if req.ExpiryDays <= 0 {
-		req.ExpiryDays = 14
+		req.ExpiryDays = s.cfg.Limits.DefaultExpiryDays
 	}
 
 	_, err = s.db.Exec(`
@@ -931,7 +937,7 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secret := r.Header.Get("X-Upload-Secret")
-	if auth.HashWithSalt(secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
+	if auth.HashWithSalt(secret, s.cfg.Secrets.IPSalt) != u.UploadSecretHash {
 		http.Error(w, `{"error":"Invalid upload secret"}`, http.StatusForbidden)
 		return
 	}
@@ -995,7 +1001,7 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 			ext = ext[1:]
 		}
 
-		for _, suspExt := range s.cfg.SuspiciousExtensions {
+		for _, suspExt := range s.quarantineExtensions() {
 			if ext == strings.ToLower(suspExt) {
 				status = models.FileStatusQuarantined
 				flagged = true
@@ -1009,7 +1015,7 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 			hasSusp := false
 			parts := strings.Split(strings.ToLower(u.OriginalName), ".")
 			for _, part := range parts[1:] {
-				for _, suspExt := range s.cfg.SuspiciousExtensions {
+				for _, suspExt := range s.quarantineExtensions() {
 					if part == strings.ToLower(suspExt) {
 						hasSusp = true
 						break
@@ -1035,7 +1041,7 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 		var uploaderLabel string
 		_ = s.db.QueryRow("SELECT label FROM people WHERE id = ?", u.PersonID).Scan(&uploaderLabel)
 
-		ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+		ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
 
 		_, err = s.db.Exec(`
 			INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, protected, keep_forever, expires_at, created_at, client_ip_hash)
@@ -1247,6 +1253,10 @@ func (s *Server) handleZipDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		totalSize += f.Size
 		validFiles = append(validFiles, f)
+	}
+	if totalSize > s.cfg.ZipLimits.MaxTotalBytes() {
+		http.Error(w, "Превышен максимальный размер ZIP архива", http.StatusBadRequest)
+		return
 	}
 
 	isLocal := s.netChecker.IsLocal(r)
@@ -1484,9 +1494,15 @@ func (s *Server) handleAdminInvitesCreate(w http.ResponseWriter, r *http.Request
 	}
 	maxActivations, _ := strconv.Atoi(r.FormValue("max_activations"))
 	expiresHours, _ := strconv.Atoi(r.FormValue("expires_hours"))
+	if maxActivations <= 0 {
+		maxActivations = s.cfg.InviteDefaults.MaxActivations
+	}
+	if expiresHours <= 0 {
+		expiresHours = s.cfg.InviteDefaults.ExpiryDays * 24
+	}
 
 	code := auth.GenerateInviteCode()
-	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
+	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPSalt)
 	codePrefix := auth.FormatCodePrefix(code)
 
 	expiresAt := time.Now().UTC().Add(time.Duration(expiresHours) * time.Hour)
@@ -1846,6 +1862,9 @@ func (s *Server) handleAdminSettingsSave(w http.ResponseWriter, r *http.Request)
 	suspStr := r.FormValue("suspicious_extensions")
 
 	s.speedLimit.UpdateLimits(upMbps, downMbps, burstMB)
+	s.cfg.SpeedLimits.ExternalUploadMbps = upMbps
+	s.cfg.SpeedLimits.ExternalDownloadMbps = downMbps
+	s.cfg.SpeedLimits.BurstMB = burstMB
 
 	var newSusp []string
 	for _, ext := range strings.Split(suspStr, ",") {
@@ -2003,11 +2022,11 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 	tokenHash := auth.HashWithSalt(token, s.cfg.Secrets.SessionSecret)
 
 	now := time.Now().UTC()
-	idleExpires := now.Add(12 * time.Hour)
-	absExpires := now.Add(7 * 24 * time.Hour)
+	idleExpires := now.Add(time.Duration(s.cfg.Sessions.AdminIdleHours) * time.Hour)
+	absExpires := now.Add(time.Duration(s.cfg.Sessions.AdminAbsoluteDays) * 24 * time.Hour)
 
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
-	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
+	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPSalt)
 
 	_, err = s.db.Exec(`
 		INSERT INTO device_sessions (person_id, admin_id, is_admin, name, session_token_hash, created_at, last_used_at, last_ip_hash, last_user_agent_hash, idle_expires_at, absolute_expires_at, revoked)
@@ -2134,7 +2153,7 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		userQuotaBytes = totalDiskBytes
 		userUploadLimitBytes = 1099511627776 * 100
 		userDownloadLimitBytes = 1099511627776 * 100
-		userMaxFileSizeBytes = s.cfg.StorageDefaults.MaxFileSize
+		userMaxFileSizeBytes = s.cfg.Limits.MaxFileSizeBytes()
 		userUsedBytes = usedStorage
 		extUp = uploadCompleted
 		locUp = localUpload
@@ -2147,7 +2166,7 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"storage": map[string]interface{}{
 			"used_bytes":       usedStorage,
-			"quota_bytes":      s.cfg.StorageDefaults.QuotaBytes,
+			"quota_bytes":      s.cfg.Limits.StorageQuotaBytes(),
 			"files_count":      filesCount,
 			"free_disk_bytes":  freeDiskBytes,
 			"total_disk_bytes": totalDiskBytes,
@@ -2183,8 +2202,8 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		"quarantine_count": quarantineCount,
 		"files_count":      filesCount,
 		"storage_used":     usedStorage,
-		"storage_total":    s.cfg.StorageDefaults.QuotaBytes,
-		"max_file_size":    s.cfg.StorageDefaults.MaxFileSize,
+		"storage_total":    s.cfg.Limits.StorageQuotaBytes(),
+		"max_file_size":    s.cfg.Limits.MaxFileSizeBytes(),
 		"service":          "lares",
 		"version":          "1.24.0",
 	})
@@ -2320,18 +2339,18 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 
 		maxActivations := req.MaxActivations
 		if maxActivations <= 0 {
-			maxActivations = 1
+			maxActivations = s.cfg.InviteDefaults.MaxActivations
 		}
 
 		expiryDays := req.ExpiryDays
 		if expiryDays <= 0 {
-			expiryDays = 30
+			expiryDays = s.cfg.InviteDefaults.ExpiryDays
 		}
 
 		code := auth.GenerateInviteCode()
 		code = auth.NormalizeInviteCode(code)
 		prefix := auth.FormatCodePrefix(code)
-		codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
+		codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPSalt)
 
 		personID := req.PersonID
 		if personID <= 0 {
@@ -2579,22 +2598,22 @@ func (s *Server) handleAPIAdminPeopleCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	storageQuota := s.cfg.StorageDefaults.QuotaBytes
+	storageQuota := s.cfg.Limits.StorageQuotaBytes()
 	if req.StorageQuotaGB > 0 {
 		storageQuota = int64(req.StorageQuotaGB * 1024 * 1024 * 1024)
 	}
 
-	uploadLimit := s.cfg.StorageDefaults.MonthlyUploadLimit
+	uploadLimit := s.cfg.Limits.MonthlyUploadLimitBytes()
 	if req.MonthlyUploadLimitGB > 0 {
 		uploadLimit = int64(req.MonthlyUploadLimitGB * 1024 * 1024 * 1024)
 	}
 
-	downloadLimit := s.cfg.StorageDefaults.MonthlyDownloadLimit
+	downloadLimit := s.cfg.Limits.MonthlyDownloadLimitBytes()
 	if req.MonthlyDownloadLimitGB > 0 {
 		downloadLimit = int64(req.MonthlyDownloadLimitGB * 1024 * 1024 * 1024)
 	}
 
-	maxFileSize := s.cfg.StorageDefaults.MaxFileSize
+	maxFileSize := s.cfg.Limits.MaxFileSizeBytes()
 	if req.MaxFileSizeGB > 0 {
 		maxFileSize = int64(req.MaxFileSizeGB * 1024 * 1024 * 1024)
 	}
@@ -2619,7 +2638,7 @@ func (s *Server) handleAPIAdminPeopleCreate(w http.ResponseWriter, r *http.Reque
 	res, err := s.db.Exec(`
 		INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, allow_user_keep_forever, session_idle_days, session_absolute_days, ignore_traffic_quota, created_at, last_activity_at)
 		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-	`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, s.cfg.StorageDefaults.MaxConcurrentUploads, s.cfg.StorageDefaults.AllowUserKeepForever, s.cfg.SessionDefaults.UserIdleDays, s.cfg.SessionDefaults.UserAbsoluteDays)
+	`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, s.cfg.Limits.MaxConcurrentUploads, s.cfg.Limits.AllowUserKeepForever, s.cfg.Sessions.UserIdleDays, s.cfg.Sessions.UserAbsoluteDays)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -2767,11 +2786,11 @@ func (s *Server) handleAPIAdminSettings(w http.ResponseWriter, r *http.Request) 
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"storage_defaults": map[string]interface{}{
-			"quota_gb":          s.cfg.StorageDefaults.QuotaBytes / (1024 * 1024 * 1024),
-			"upload_limit_gb":   s.cfg.StorageDefaults.MonthlyUploadLimit / (1024 * 1024 * 1024),
-			"download_limit_gb": s.cfg.StorageDefaults.MonthlyDownloadLimit / (1024 * 1024 * 1024),
-			"max_file_size_gb":  s.cfg.StorageDefaults.MaxFileSize / (1024 * 1024 * 1024),
-			"default_expiry":    s.cfg.StorageDefaults.DefaultExpiryDays,
+			"quota_gb":          s.cfg.Limits.StorageQuotaBytes() / (1024 * 1024 * 1024),
+			"upload_limit_gb":   s.cfg.Limits.MonthlyUploadLimitBytes() / (1024 * 1024 * 1024),
+			"download_limit_gb": s.cfg.Limits.MonthlyDownloadLimitBytes() / (1024 * 1024 * 1024),
+			"max_file_size_gb":  s.cfg.Limits.MaxFileSizeBytes() / (1024 * 1024 * 1024),
+			"default_expiry":    s.cfg.Limits.DefaultExpiryDays,
 		},
 		"speed_limits": map[string]interface{}{
 			"upload_mbps":   s.cfg.SpeedLimits.ExternalUploadMbps,
@@ -2833,7 +2852,7 @@ func (s *Server) getDefaultPersonID() int64 {
 		res, err := s.db.Exec(`
 			INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, created_at)
 			VALUES (?, '', 1, ?, ?, ?, ?, 1, ?)
-		`, "Standard User", s.cfg.StorageDefaults.QuotaBytes, s.cfg.StorageDefaults.MonthlyUploadLimit, s.cfg.StorageDefaults.MonthlyDownloadLimit, s.cfg.StorageDefaults.MaxFileSize, time.Now().UTC())
+		`, "Standard User", s.cfg.Limits.StorageQuotaBytes(), s.cfg.Limits.MonthlyUploadLimitBytes(), s.cfg.Limits.MonthlyDownloadLimitBytes(), s.cfg.Limits.MaxFileSizeBytes(), time.Now().UTC())
 		if err == nil {
 			personID, _ = res.LastInsertId()
 		}
@@ -2886,7 +2905,7 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	}
 	expiryDays := req.ExpiryDays
 	if expiryDays <= 0 {
-		expiryDays = 14
+		expiryDays = s.cfg.Limits.DefaultExpiryDays
 	}
 
 	var personID int64
@@ -2900,7 +2919,7 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 
 	uploadID := auth.GenerateRandomID(16)
 	uploadSecret := auth.GenerateRandomToken(32)
-	uploadSecretHash := auth.HashWithSalt(uploadSecret, s.cfg.Secrets.IPHashSalt)
+	uploadSecretHash := auth.HashWithSalt(uploadSecret, s.cfg.Secrets.IPSalt)
 	now := time.Now().UTC()
 	resExpires := now.Add(24 * time.Hour)
 
@@ -2910,7 +2929,7 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	}
 
 	clientIP := netutils.GetClientIP(r)
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
 
 	_, err := s.db.Exec(`
 		INSERT INTO uploads (id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes, status, expiry_days, reservation_expires_at, created_at, client_ip_hash)
@@ -2977,7 +2996,7 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if auth.HashWithSalt(secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
+	if auth.HashWithSalt(secret, s.cfg.Secrets.IPSalt) != u.UploadSecretHash {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
 		return
@@ -3074,7 +3093,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if auth.HashWithSalt(req.Secret, s.cfg.Secrets.IPHashSalt) != u.UploadSecretHash {
+	if auth.HashWithSalt(req.Secret, s.cfg.Secrets.IPSalt) != u.UploadSecretHash {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
 		return
@@ -3111,7 +3130,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 		ext = ext[1:]
 	}
 
-	for _, suspExt := range s.cfg.SuspiciousExtensions {
+	for _, suspExt := range s.quarantineExtensions() {
 		if ext == strings.ToLower(suspExt) {
 			status = models.FileStatusQuarantined
 			flagged = true
@@ -3123,7 +3142,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	if !flagged && strings.Count(u.OriginalName, ".") > 1 {
 		parts := strings.Split(strings.ToLower(u.OriginalName), ".")
 		for _, part := range parts[1:] {
-			for _, suspExt := range s.cfg.SuspiciousExtensions {
+			for _, suspExt := range s.quarantineExtensions() {
 				if part == strings.ToLower(suspExt) {
 					status = models.FileStatusQuarantined
 					flagged = true
@@ -3144,7 +3163,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 		expAt = &t
 	}
 
-	storedRelPath, _ := filepath.Rel(s.cfg.DataDir, finalPath)
+	storedRelPath, _ := filepath.Rel(s.cfg.Paths.DataDir, finalPath)
 	if storedRelPath == "" {
 		storedRelPath = filepath.Base(finalPath)
 	}
@@ -3155,7 +3174,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	}
 
 	clientIP := netutils.GetClientIP(r)
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
 
 	var pID int64
 	if u.PersonID > 0 {
@@ -3294,7 +3313,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		ext = ext[1:]
 	}
 
-	for _, suspExt := range s.cfg.SuspiciousExtensions {
+	for _, suspExt := range s.quarantineExtensions() {
 		if ext == strings.ToLower(suspExt) {
 			status = models.FileStatusQuarantined
 			flagged = true
@@ -3306,7 +3325,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	if !flagged && strings.Count(filename, ".") > 1 {
 		parts := strings.Split(strings.ToLower(filename), ".")
 		for _, part := range parts[1:] {
-			for _, suspExt := range s.cfg.SuspiciousExtensions {
+			for _, suspExt := range s.quarantineExtensions() {
 				if part == strings.ToLower(suspExt) {
 					status = models.FileStatusQuarantined
 					flagged = true
@@ -3320,7 +3339,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	expiryDays := 14
+	expiryDays := s.cfg.Limits.DefaultExpiryDays
 	if expStr := r.FormValue("expiry_days"); expStr != "" {
 		if v, err := strconv.Atoi(expStr); err == nil && v > 0 {
 			expiryDays = v
@@ -3333,7 +3352,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	expAt := now.Add(time.Duration(expiryDays) * 24 * time.Hour)
-	storedRelPath, _ := filepath.Rel(s.cfg.DataDir, finalPath)
+	storedRelPath, _ := filepath.Rel(s.cfg.Paths.DataDir, finalPath)
 	if storedRelPath == "" {
 		storedRelPath = filepath.Base(finalPath)
 	}
@@ -3344,7 +3363,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP := netutils.GetClientIP(r)
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
 
 	var pID int64
 	if person != nil {
@@ -3485,8 +3504,8 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 		deviceName = deviceName[:50]
 	}
 
-	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPHashSalt)
-	rawCodeHash := auth.HashWithSalt(strings.TrimSpace(req.Code), s.cfg.Secrets.IPHashSalt)
+	codeHash := auth.HashWithSalt(code, s.cfg.Secrets.IPSalt)
+	rawCodeHash := auth.HashWithSalt(strings.TrimSpace(req.Code), s.cfg.Secrets.IPSalt)
 	now := time.Now().UTC()
 
 	var inv models.InviteCode
@@ -3528,10 +3547,10 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 
 	token := auth.GenerateRandomToken(32)
 	tokenHash := auth.HashWithSalt(token, s.cfg.Secrets.SessionSecret)
-	idleExpires := now.Add(30 * 24 * time.Hour)
-	absExpires := now.Add(90 * 24 * time.Hour)
-	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPHashSalt)
-	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPHashSalt)
+	idleExpires := now.Add(time.Duration(s.cfg.Sessions.UserIdleDays) * 24 * time.Hour)
+	absExpires := now.Add(time.Duration(s.cfg.Sessions.UserAbsoluteDays) * 24 * time.Hour)
+	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
+	uaHash := auth.HashWithSalt(r.UserAgent(), s.cfg.Secrets.IPSalt)
 
 	_, err = s.db.Exec(`
 		INSERT INTO device_sessions (person_id, is_admin, name, session_token_hash, created_at, last_used_at, last_ip_hash, last_user_agent_hash, idle_expires_at, absolute_expires_at, revoked)

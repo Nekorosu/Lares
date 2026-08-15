@@ -22,26 +22,29 @@ func setupTestServer(t *testing.T) (*Server, string) {
 	}
 
 	cfg := &config.Config{
-		DataDir:     filepath.Join(tempDir, "data"),
-		TmpDir:      filepath.Join(tempDir, "tmp"),
-		DBPath:      filepath.Join(tempDir, "lares.db"),
-		SecurityLog: filepath.Join(tempDir, "security.log"),
-		StorageDefaults: config.StorageDefaults{
-			QuotaBytes:           1024 * 1024 * 10,
-			MonthlyUploadLimit:   1024 * 1024 * 10,
-			MonthlyDownloadLimit: 1024 * 1024 * 10,
-			MaxFileSize:          1024 * 1024 * 5,
+		Paths: config.Paths{
+			DataDir:     filepath.Join(tempDir, "data"),
+			TmpDir:      filepath.Join(tempDir, "tmp"),
+			DBPath:      filepath.Join(tempDir, "lares.db"),
+			SecurityLog: filepath.Join(tempDir, "security.log"),
+		},
+		Limits: config.Limits{
+			DefaultStorageQuotaGB:         1,
+			DefaultMonthlyUploadLimitGB:   1,
+			DefaultMonthlyDownloadLimitGB: 1,
+			DefaultMaxFileSizeGB:          1,
 		},
 		Secrets: config.Secrets{
 			SessionSecret: "test-secret",
-			IPHashSalt:    "test-salt",
+			IPSalt:        "test-salt",
 		},
+		Network: config.Network{LocalCIDRs: []string{"127.0.0.1/32"}},
 	}
 
-	os.MkdirAll(cfg.DataDir, 0755)
-	os.MkdirAll(cfg.TmpDir, 0755)
+	os.MkdirAll(cfg.Paths.DataDir, 0755)
+	os.MkdirAll(cfg.Paths.TmpDir, 0755)
 
-	database, err := db.InitDB(cfg.DBPath)
+	database, err := db.InitDB(cfg.Paths.DBPath)
 	if err != nil {
 		t.Fatalf("Failed to init DB: %v", err)
 	}
@@ -116,7 +119,7 @@ func TestUploadReservation(t *testing.T) {
 	reqUser := httptest.NewRequest("POST", "/api/files/upload/reserve", bytes.NewReader([]byte(`{"filename":"test2.txt","size":100}`)))
 	reqUser.Header.Set("Content-Type", "application/json")
 	reqUser.AddCookie(&http.Cookie{Name: "homeshare_session", Value: token})
-	
+
 	csrfToken := "test-csrf-token"
 	reqUser.AddCookie(&http.Cookie{Name: "homeshare_csrf", Value: csrfToken})
 	reqUser.Header.Set("X-CSRF-Token", csrfToken)
@@ -142,7 +145,7 @@ func TestQueryStringTokenAuthentication(t *testing.T) {
 	reqQuery := httptest.NewRequest("GET", "/api/auth/me?token="+token, nil)
 	rrQuery := httptest.NewRecorder()
 	router.ServeHTTP(rrQuery, reqQuery)
-	
+
 	if rrQuery.Code == http.StatusOK {
 		var res map[string]interface{}
 		json.Unmarshal(rrQuery.Body.Bytes(), &res)
@@ -158,7 +161,7 @@ func TestQueryStringTokenAuthentication(t *testing.T) {
 	reqCookie.AddCookie(&http.Cookie{Name: "homeshare_session", Value: token})
 	rrCookie := httptest.NewRecorder()
 	router.ServeHTTP(rrCookie, reqCookie)
-	
+
 	if rrCookie.Code != http.StatusOK {
 		t.Errorf("Cookie token should authenticate, got %d", rrCookie.Code)
 	} else {
