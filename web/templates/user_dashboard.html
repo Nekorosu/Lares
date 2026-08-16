@@ -51,6 +51,12 @@
       <option value="14" selected>14 дней (по умолчанию)</option>
       <option value="30">30 дней</option>
     </select>
+    {{if .AllowUserKeepForever}}
+    <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem;">
+      <input type="checkbox" id="keepForever">
+      Хранить бессрочно
+    </label>
+    {{end}}
   </div>
 
   <div id="dropzone" class="dropzone">
@@ -71,7 +77,7 @@
   </div>
 </div>
 
-<!-- Quarantined Files (if any) -->
+<!-- Файлы в карантине (если есть) -->
 {{if .QuarantinedFiles}}
 <div class="card" style="border-color: var(--accent-amber);">
   <h2 style="color: var(--accent-amber);">Файлы на проверке (Карантин)</h2>

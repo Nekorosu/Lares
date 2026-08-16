@@ -1,13 +1,13 @@
 {{define "content"}}
-<h2>Настройки системы и Блокировки (Settings)</h2>
+<h2>Настройки системы и блокировки</h2>
 
 <div class="card">
-  <h3>Активные блокировки Rate Limit</h3>
+  <h3>Активные ограничения частоты запросов</h3>
   {{if .Locks}}
   <table>
     <thead>
       <tr>
-        <th>Ключ (Key)</th>
+        <th>Ключ</th>
         <th>Тип</th>
         <th>Причина</th>
         <th>Истекает</th>
@@ -33,10 +33,10 @@
   </table>
   <form method="POST" action="/admin/locks/clear-all" style="margin-top: 1rem;">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <button type="submit" class="btn btn-danger">Сбросить ВСЕ блокировки rate limit</button>
+    <button type="submit" class="btn btn-danger">Сбросить ВСЕ блокировки ограничения частоты запросов</button>
   </form>
   {{else}}
-  <p style="color: var(--text-muted); padding: 1rem 0;">Активных блокировок rate limit нет.</p>
+  <p style="color: var(--text-muted); padding: 1rem 0;">Активных блокировок ограничения частоты запросов нет.</p>
   {{end}}
 </div>
 
@@ -46,15 +46,15 @@
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="grid">
       <div class="form-group">
-        <label>Внешний лимит загрузки (Mbps)</label>
+        <label>Внешний лимит загрузки (Мбит/с)</label>
         <input type="number" name="external_upload_mbps" class="form-control" value="{{.Config.SpeedLimits.ExternalUploadMbps}}" min="10" max="1000" required>
       </div>
       <div class="form-group">
-        <label>Внешний лимит скачивания (Mbps)</label>
+        <label>Внешний лимит скачивания (Мбит/с)</label>
         <input type="number" name="external_download_mbps" class="form-control" value="{{.Config.SpeedLimits.ExternalDownloadMbps}}" min="10" max="1000" required>
       </div>
       <div class="form-group">
-        <label>Burst (MB)</label>
+        <label>Размер всплеска (МБ)</label>
         <input type="number" name="burst_mb" class="form-control" value="{{.Config.SpeedLimits.BurstMB}}" min="1" max="128" required>
       </div>
       <div class="form-group">

@@ -1,5 +1,5 @@
 {{define "content"}}
-<h2>Управление инвайт-кодами (Invites)</h2>
+<h2>Управление инвайт-кодами</h2>
 
 {{if .NewInviteCode}}
 <div class="card" style="border-color: var(--accent-green); background: rgba(34, 197, 94, 0.05);">
@@ -13,7 +13,7 @@
     {{if .NewInviteQRData}}
     <div>
       <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem;">QR-код для активации:</p>
-      <img src="data:image/png;base64,{{.NewInviteQRData}}" alt="Invite QR" style="border-radius: 8px; border: 2px solid var(--border-color);">
+      <img src="data:image/png;base64,{{.NewInviteQRData}}" alt="QR-код инвайта" style="border-radius: 8px; border: 2px solid var(--border-color);">
     </div>
     {{end}}
   </div>
@@ -26,7 +26,7 @@
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="grid">
       <div class="form-group">
-        <label>Пользователь (Person)</label>
+        <label>Пользователь</label>
         <select name="person_id" class="form-control" required>
           {{range .People}}
             <option value="{{.ID}}" {{if eq .ID $.SelectedPersonID}}selected{{end}}>{{.Label}} (#{{.ID}})</option>

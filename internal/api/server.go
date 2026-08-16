@@ -48,6 +48,99 @@ type Server struct {
 	templates   map[string]*template.Template
 }
 
+func consumeInviteActivation(database *sql.DB, inviteID int64) error {
+	result, err := database.Exec(`UPDATE invite_codes SET
+		activations_used = activations_used + 1,
+		enabled = CASE WHEN activations_used + 1 >= max_activations THEN 0 ELSE enabled END
+		WHERE id = ? AND enabled = 1 AND activations_used < max_activations`, inviteID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("invite is no longer active")
+	}
+	return nil
+}
+
+func canKeepForever(person *models.Person, requested bool) bool {
+	return requested && person != nil && person.AllowUserKeepForever
+}
+
+func resolveUploadRetention(person *models.Person, requestedKeepForever bool, expiryDays, defaultExpiryDays int) (bool, int) {
+	if canKeepForever(person, requestedKeepForever) {
+		return true, 0
+	}
+	if expiryDays <= 0 {
+		expiryDays = defaultExpiryDays
+	}
+	return false, expiryDays
+}
+
+func localizeAuditActor(actorType string) string {
+	switch actorType {
+	case "admin":
+		return "Администратор"
+	case "person":
+		return "Пользователь"
+	case "system":
+		return "Система"
+	default:
+		return actorType
+	}
+}
+
+func localizeAuditEvent(event string) string {
+	switch event {
+	case "invite_activated":
+		return "Активация инвайта"
+	case "admin_login", "admin_login_api":
+		return "Вход администратора"
+	case "upload_file":
+		return "Загрузка файла"
+	case "download_file":
+		return "Скачивание файла"
+	case "delete_file":
+		return "Удаление файла"
+	case "file_quarantined":
+		return "Файл помещён в карантин"
+	default:
+		return event
+	}
+}
+
+func localizeAuditDetails(details string) string {
+	return strings.NewReplacer(
+		"Device session created", "Создана сессия устройства",
+		"Admin logged in successfully", "Администратор успешно вошёл",
+		"Admin logged in via API", "Администратор вошёл через API",
+		"User deleted file via API", "Пользователь удалил файл через API",
+		"Admin deleted file via API", "Администратор удалил файл через API",
+		"User deleted file", "Пользователь удалил файл",
+		"Admin downloaded", "Администратор скачал",
+		"Downloaded", "Скачан",
+		"Admin uploaded", "Администратор загрузил",
+		"Uploaded", "Загружен",
+		"Quarantined", "Отправлен в карантин",
+	).Replace(details)
+}
+
+func localizeLockType(lockType string) string {
+	switch lockType {
+	case "invite_failed":
+		return "Ошибки активации инвайта"
+	case "admin_failed":
+		return "Ошибки входа администратора"
+	case "admin_totp_failed":
+		return "Ошибки кода TOTP"
+	default:
+		return lockType
+	}
+}
+
 func parseTemplates() (map[string]*template.Template, error) {
 	pages := []string{
 		"login.html",
@@ -145,7 +238,7 @@ func (s *Server) quarantineExtensions() []string {
 func (s *Server) renderTemplate(w http.ResponseWriter, pageName string, data interface{}) {
 	tmpl, ok := s.templates[pageName]
 	if !ok {
-		http.Error(w, "Template not found", http.StatusInternalServerError)
+		http.Error(w, "Шаблон не найден", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -390,7 +483,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			if strings.HasPrefix(r.URL.Path, "/api/") || strings.Contains(r.Header.Get("Accept"), "application/json") {
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Admin access required"})
+				json.NewEncoder(w).Encode(map[string]string{"error": "Требуется доступ администратора"})
 				return
 			}
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
@@ -460,7 +553,10 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Increment invite activation
-	_, _ = s.db.Exec("UPDATE invite_codes SET activations_used = activations_used + 1 WHERE id = ?", inv.ID)
+	if err := consumeInviteActivation(s.db, inv.ID); err != nil {
+		http.Error(w, "Инвайт уже использован", http.StatusConflict)
+		return
+	}
 
 	// Create DeviceSession
 	token := auth.GenerateRandomToken(32)
@@ -482,11 +578,11 @@ func (s *Server) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	`, person.ID, deviceName, tokenHash, now, now, ipHash, uaHash, idleExpires, absExpires)
 
 	if err != nil {
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		http.Error(w, "Не удалось создать сессию", http.StatusInternalServerError)
 		return
 	}
 
-	s.auditLog.Log("person", person.ID, "invite_activated", "invite_code", fmt.Sprintf("%d", inv.ID), clientIP, "Device session created")
+	s.auditLog.Log("person", person.ID, "invite_activated", "invite_code", fmt.Sprintf("%d", inv.ID), clientIP, "Создана сессия устройства")
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "homeshare_session",
@@ -583,11 +679,11 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("[Session Error] Failed to insert admin session: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to create session: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Не удалось создать сессию: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	s.auditLog.Log("admin", admin.ID, "admin_login", "admin_user", fmt.Sprintf("%d", admin.ID), clientIP, "Admin logged in successfully")
+	s.auditLog.Log("admin", admin.ID, "admin_login", "admin_user", fmt.Sprintf("%d", admin.ID), clientIP, "Администратор успешно вошёл")
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "homeshare_session",
@@ -747,6 +843,7 @@ func (s *Server) handleUserDashboard(w http.ResponseWriter, r *http.Request) {
 		"DownloadLimitFormatted": formatBytes(person.MonthlyDownloadLimit),
 		"DownloadPercent":        fmt.Sprintf("%.1f", downloadPercent),
 		"MaxFileSizeFormatted":   formatBytes(person.MaxFileSizeBytes),
+		"AllowUserKeepForever":   person.AllowUserKeepForever,
 		"Files":                  files,
 		"QuarantinedFiles":       qFiles,
 	})
@@ -764,14 +861,14 @@ func (s *Server) handleUserDeleteFile(w http.ResponseWriter, r *http.Request) {
 	var f models.FileRecord
 	err := s.db.QueryRow("SELECT id, person_id, stored_path, protected FROM files WHERE id = ?", fileID).Scan(&f.ID, &f.PersonID, &f.StoredPath, &f.Protected)
 	if err != nil {
-		http.Error(w, "Not found", http.StatusNotFound)
+		http.Error(w, "Не найдено", http.StatusNotFound)
 		return
 	}
 
 	isAdminSession := (admin != nil) || (sess != nil && sess.IsAdmin)
 	if !isAdminSession {
 		if person == nil || person.ID == 0 || f.PersonID != person.ID || f.Protected {
-			http.Error(w, "Forbidden: Вы можете удалять только свои собственные файлы", http.StatusForbidden)
+			http.Error(w, "Вы можете удалять только свои собственные файлы", http.StatusForbidden)
 			return
 		}
 	}
@@ -779,7 +876,7 @@ func (s *Server) handleUserDeleteFile(w http.ResponseWriter, r *http.Request) {
 	_ = s.sm.DeleteFile(f.StoredPath)
 	_, _ = s.db.Exec("DELETE FROM files WHERE id = ?", f.ID)
 	if person != nil {
-		s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, netutils.GetClientIP(r), "User deleted file")
+		s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, netutils.GetClientIP(r), "Пользователь удалил файл")
 	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -788,7 +885,7 @@ func (s *Server) handleUserDeleteFile(w http.ResponseWriter, r *http.Request) {
 // Chunked Upload API - Step 1: POST /api/uploads
 func (s *Server) checkUploadPolicy(person *models.Person, size int64, isLocal bool) error {
 	if person == nil {
-		return fmt.Errorf("Unauthorized")
+		return fmt.Errorf("Требуется авторизация")
 	}
 	if size > person.MaxFileSizeBytes {
 		return fmt.Errorf("Размер файла превышает максимально допустимый")
@@ -822,7 +919,7 @@ func (s *Server) checkUploadPolicy(person *models.Person, size int64, isLocal bo
 func (s *Server) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
 	sess, person, _ := s.getSession(r)
 	if sess == nil || person == nil {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Требуется авторизация"}`, http.StatusUnauthorized)
 		return
 	}
 
@@ -844,10 +941,11 @@ func (s *Server) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
 		Size        int64  `json:"size"`
 		ContentType string `json:"content_type"`
 		ExpiryDays  int    `json:"expiry_days"`
+		KeepForever bool   `json:"keep_forever"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Некорректный JSON"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -898,9 +996,7 @@ func (s *Server) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
 	reservationExpires := time.Now().UTC().Add(24 * time.Hour) // Dynamic reservation TTL
 	ipHash := auth.HashWithSalt(clientIP, s.cfg.Secrets.IPSalt)
 
-	if req.ExpiryDays <= 0 {
-		req.ExpiryDays = s.cfg.Limits.DefaultExpiryDays
-	}
+	_, req.ExpiryDays = resolveUploadRetention(person, req.KeepForever, req.ExpiryDays, s.cfg.Limits.DefaultExpiryDays)
 
 	_, err = s.db.Exec(`
 		INSERT INTO uploads (id, person_id, session_id, upload_secret_hash, original_name, declared_size, received_bytes, status, expiry_days, reservation_expires_at, created_at, client_ip_hash)
@@ -908,7 +1004,7 @@ func (s *Server) handleUploadCreate(w http.ResponseWriter, r *http.Request) {
 	`, uploadID, person.ID, sess.ID, secretHash, filename, req.Size, req.ExpiryDays, reservationExpires, time.Now().UTC(), ipHash)
 
 	if err != nil {
-		http.Error(w, `{"error":"Failed to create upload"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"Не удалось создать загрузку"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -932,32 +1028,32 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 	`, uploadID).Scan(&u.ID, &u.PersonID, &u.SessionID, &u.UploadSecretHash, &u.OriginalName, &u.DeclaredSize, &u.ReceivedBytes, &u.Status, &u.ExpiryDays, &u.ReservationExpiresAt)
 
 	if err != nil {
-		http.Error(w, `{"error":"Upload not found"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"Загрузка не найдена"}`, http.StatusNotFound)
 		return
 	}
 
 	secret := r.Header.Get("X-Upload-Secret")
 	if auth.HashWithSalt(secret, s.cfg.Secrets.IPSalt) != u.UploadSecretHash {
-		http.Error(w, `{"error":"Invalid upload secret"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"Неверный секрет загрузки"}`, http.StatusForbidden)
 		return
 	}
 
 	sess, person, admin := s.getSession(r)
 	if sess == nil && person == nil && admin == nil {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"Требуется авторизация"}`, http.StatusUnauthorized)
 		return
 	}
 	if u.PersonID != 0 {
 		if person == nil || person.ID != u.PersonID {
-			http.Error(w, `{"error":"Unauthorized: Person mismatch"}`, http.StatusForbidden)
+			http.Error(w, `{"error":"Загрузка принадлежит другому пользователю"}`, http.StatusForbidden)
 			return
 		}
 		if u.SessionID != 0 && sess != nil && u.SessionID != sess.ID {
-			http.Error(w, `{"error":"Unauthorized: Session mismatch"}`, http.StatusForbidden)
+			http.Error(w, `{"error":"Загрузка принадлежит другой сессии"}`, http.StatusForbidden)
 			return
 		}
 	} else if admin == nil && (sess == nil || !sess.IsAdmin) {
-		http.Error(w, `{"error":"Unauthorized: Admin required"}`, http.StatusForbidden)
+		http.Error(w, `{"error":"Требуется доступ администратора"}`, http.StatusForbidden)
 		return
 	}
 
@@ -987,7 +1083,7 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 		fileID := auth.GenerateRandomID(16)
 		finalPath, err := s.sm.FinalizeUpload(uploadID, fileID)
 		if err != nil {
-			http.Error(w, `{"error":"Failed to finalize upload"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"Не удалось завершить загрузку"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -1032,9 +1128,10 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		keepForever, expiryDays := resolveUploadRetention(person, u.ExpiryDays == 0, u.ExpiryDays, s.cfg.Limits.DefaultExpiryDays)
 		var expiresAt *time.Time
-		if u.ExpiryDays > 0 {
-			t := time.Now().UTC().Add(time.Duration(u.ExpiryDays) * 24 * time.Hour)
+		if !keepForever {
+			t := time.Now().UTC().Add(time.Duration(expiryDays) * 24 * time.Hour)
 			expiresAt = &t
 		}
 
@@ -1045,11 +1142,11 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 
 		_, err = s.db.Exec(`
 			INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, protected, keep_forever, expires_at, created_at, client_ip_hash)
-			VALUES (?, ?, ?, ?, ?, ?, 'application/octet-stream', ?, ?, ?, 0, 0, ?, ?, ?)
-		`, fileID, u.PersonID, uploaderLabel, u.OriginalName, finalPath, u.ReceivedBytes, string(status), flagged, flagReason, expiresAt, time.Now().UTC(), ipHash)
+			VALUES (?, ?, ?, ?, ?, ?, 'application/octet-stream', ?, ?, ?, 0, ?, ?, ?, ?)
+		`, fileID, u.PersonID, uploaderLabel, u.OriginalName, finalPath, u.ReceivedBytes, string(status), flagged, flagReason, keepForever, expiresAt, time.Now().UTC(), ipHash)
 
 		if err != nil {
-			http.Error(w, `{"error":"Failed to save file record"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"Не удалось сохранить запись о файле"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -1072,13 +1169,13 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 		offsetStr := r.URL.Query().Get("offset")
 		offset, _ := strconv.ParseInt(offsetStr, 10, 64)
 		if offset != u.ReceivedBytes {
-			http.Error(w, fmt.Sprintf(`{"error":"Offset mismatch. Expected %d"}`, u.ReceivedBytes), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf(`{"error":"Неверное смещение. Ожидалось %d"}`, u.ReceivedBytes), http.StatusBadRequest)
 			return
 		}
 
 		f, _, err := s.sm.PreparePartFile(uploadID)
 		if err != nil {
-			http.Error(w, `{"error":"Failed to open part file"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"Не удалось открыть временный файл"}`, http.StatusInternalServerError)
 			return
 		}
 		defer f.Close()
@@ -1090,7 +1187,7 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 
 		written, err := io.Copy(f, limitedReader)
 		if err != nil && err != io.EOF {
-			http.Error(w, `{"error":"Failed to write chunk"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"Не удалось записать фрагмент файла"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -1117,7 +1214,7 @@ func (sw *speedResponseWriter) Write(p []byte) (int, error) {
 func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	sess, person, admin := s.getSession(r)
 	if sess == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, "Требуется авторизация", http.StatusUnauthorized)
 		return
 	}
 
@@ -1132,7 +1229,7 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if f.Status == models.FileStatusQuarantined && admin == nil && (person == nil || f.PersonID != person.ID) {
-		http.Error(w, "Quarantined file", http.StatusForbidden)
+		http.Error(w, "Файл находится в карантине", http.StatusForbidden)
 		return
 	}
 
@@ -1178,9 +1275,9 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 
 	if person != nil {
 		_ = s.tm.RecordDownloadCompleted(person.ID, f.Size, isLocal)
-		s.auditLog.Log("person", person.ID, "download_file", "file", f.ID, netutils.GetClientIP(r), fmt.Sprintf("Downloaded '%s' (%s)", f.OriginalName, formatBytes(f.Size)))
+		s.auditLog.Log("person", person.ID, "download_file", "file", f.ID, netutils.GetClientIP(r), fmt.Sprintf("Скачан '%s' (%s)", f.OriginalName, formatBytes(f.Size)))
 	} else if admin != nil {
-		s.auditLog.Log("admin", admin.ID, "download_file", "file", f.ID, netutils.GetClientIP(r), fmt.Sprintf("Admin downloaded '%s' (%s)", f.OriginalName, formatBytes(f.Size)))
+		s.auditLog.Log("admin", admin.ID, "download_file", "file", f.ID, netutils.GetClientIP(r), fmt.Sprintf("Администратор скачал '%s' (%s)", f.OriginalName, formatBytes(f.Size)))
 	}
 }
 
@@ -1197,7 +1294,7 @@ func isPreviewableType(filename string) bool {
 func (s *Server) handlePreviewFile(w http.ResponseWriter, r *http.Request) {
 	sess, person, admin := s.getSession(r)
 	if sess == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, "Требуется авторизация", http.StatusUnauthorized)
 		return
 	}
 
@@ -1205,12 +1302,12 @@ func (s *Server) handlePreviewFile(w http.ResponseWriter, r *http.Request) {
 	var f models.FileRecord
 	err := s.db.QueryRow("SELECT id, person_id, original_name, stored_path, size, status FROM files WHERE id = ?", fileID).Scan(&f.ID, &f.PersonID, &f.OriginalName, &f.StoredPath, &f.Size, &f.Status)
 	if err != nil || !isPreviewableType(f.OriginalName) {
-		http.Error(w, "Preview not allowed for this file type", http.StatusBadRequest)
+		http.Error(w, "Предпросмотр этого типа файлов недоступен", http.StatusBadRequest)
 		return
 	}
 
 	if f.Status == models.FileStatusQuarantined && admin == nil && (person == nil || f.PersonID != person.ID) {
-		http.Error(w, "Quarantined file", http.StatusForbidden)
+		http.Error(w, "Файл находится в карантине", http.StatusForbidden)
 		return
 	}
 
@@ -1230,7 +1327,7 @@ func (s *Server) handlePreviewFile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleZipDownload(w http.ResponseWriter, r *http.Request) {
 	sess, person, _ := s.getSession(r)
 	if sess == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, "Требуется авторизация", http.StatusUnauthorized)
 		return
 	}
 
@@ -1323,10 +1420,10 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 			_ = rows.Scan(&a.Time, &a.ActorType, &a.ActorID, &a.Event, &a.Details)
 			logs = append(logs, auditItem{
 				TimeFormatted: a.Time.Format("02.01 15:04:05"),
-				ActorType:     a.ActorType,
+				ActorType:     localizeAuditActor(a.ActorType),
 				ActorID:       a.ActorID,
-				Event:         a.Event,
-				Details:       a.Details,
+				Event:         localizeAuditEvent(a.Event),
+				Details:       localizeAuditDetails(a.Details),
 			})
 		}
 		rows.Close()
@@ -1385,7 +1482,7 @@ func (s *Server) handleAdminPeople(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminPeopleCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	label := strings.TrimSpace(r.FormValue("label"))
@@ -1409,7 +1506,7 @@ func (s *Server) handleAdminPeopleCreate(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAdminPeopleDisable(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	personID := strings.TrimPrefix(r.URL.Path, "/admin/people/disable/")
@@ -1421,7 +1518,7 @@ func (s *Server) handleAdminPeopleDisable(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleAdminPeopleEnable(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	personID := strings.TrimPrefix(r.URL.Path, "/admin/people/enable/")
@@ -1431,7 +1528,7 @@ func (s *Server) handleAdminPeopleEnable(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAdminPeopleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	personID := strings.TrimPrefix(r.URL.Path, "/admin/people/delete/")
@@ -1459,7 +1556,7 @@ func (s *Server) handleAdminInvites(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(`
 		SELECT i.id, p.label, i.code_prefix, i.max_activations, i.activations_used, i.expires_at
 		FROM invite_codes i JOIN people p ON i.person_id = p.id
-		WHERE i.enabled = 1 ORDER BY i.id DESC
+		WHERE i.enabled = 1 AND i.activations_used < i.max_activations ORDER BY i.id DESC
 	`)
 
 	type inviteItem struct {
@@ -1514,7 +1611,7 @@ func (s *Server) handleAdminInvitesCreate(w http.ResponseWriter, r *http.Request
 
 	if err != nil {
 		log.Printf("[Invite Error] %v", err)
-		http.Error(w, "Failed to create invite", http.StatusInternalServerError)
+		http.Error(w, "Не удалось создать инвайт", http.StatusInternalServerError)
 		return
 	}
 
@@ -1539,7 +1636,7 @@ func (s *Server) handleAdminInvitesCreate(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleAdminInvitesRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	inviteID := strings.TrimPrefix(r.URL.Path, "/admin/invites/revoke/")
@@ -1595,7 +1692,7 @@ func (s *Server) handleAdminSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	sessionID := strings.TrimPrefix(r.URL.Path, "/admin/sessions/revoke/")
@@ -1605,7 +1702,7 @@ func (s *Server) handleAdminSessionsRevoke(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleAdminSessionsRevokeAll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	personID := strings.TrimPrefix(r.URL.Path, "/admin/sessions/revoke-all/")
@@ -1679,7 +1776,7 @@ func (s *Server) handleAdminFiles(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminFilesDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	fileID := strings.TrimPrefix(r.URL.Path, "/admin/files/delete/")
@@ -1692,7 +1789,7 @@ func (s *Server) handleAdminFilesDelete(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAdminFilesToggleProtected(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	fileID := strings.TrimPrefix(r.URL.Path, "/admin/files/toggle-protected/")
@@ -1702,7 +1799,7 @@ func (s *Server) handleAdminFilesToggleProtected(w http.ResponseWriter, r *http.
 
 func (s *Server) handleAdminFilesToggleForever(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	fileID := strings.TrimPrefix(r.URL.Path, "/admin/files/toggle-forever/")
@@ -1746,7 +1843,7 @@ func (s *Server) handleAdminQuarantine(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminQuarantineApprove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	fileID := strings.TrimPrefix(r.URL.Path, "/admin/quarantine/approve/")
@@ -1812,7 +1909,7 @@ func (s *Server) handleAdminTraffic(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminTrafficReset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	personIDStr := strings.TrimPrefix(r.URL.Path, "/admin/traffic/reset/")
@@ -1837,6 +1934,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 			var l lockItem
 			var exp time.Time
 			_ = rows.Scan(&l.Key, &l.Type, &l.Reason, &exp)
+			l.Type = localizeLockType(l.Type)
 			l.ExpiresAtFormatted = exp.Format("02.01 15:04")
 			locks = append(locks, l)
 		}
@@ -1851,7 +1949,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	upMbps, _ := strconv.Atoi(r.FormValue("external_upload_mbps"))
@@ -1886,7 +1984,7 @@ func (s *Server) handleAdminSettingsSave(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAdminLocksClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	key := strings.TrimPrefix(r.URL.Path, "/admin/locks/clear/")
@@ -1896,7 +1994,7 @@ func (s *Server) handleAdminLocksClear(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminLocksClearAll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 	_ = s.rateLimiter.ClearAllLocks()
@@ -1922,22 +2020,23 @@ func (s *Server) generateCSRFToken(w http.ResponseWriter, r *http.Request) strin
 
 func formatBytes(b int64) string {
 	if b == 0 {
-		return "0 B"
+		return "0 Б"
 	}
 	const unit = 1024
 	if b < unit {
-		return fmt.Sprintf("%d B", b)
+		return fmt.Sprintf("%d Б", b)
 	}
 	div, exp := int64(unit), 0
 	for n := b / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+	units := []string{"КБ", "МБ", "ГБ", "ТБ", "ПБ", "ЭБ"}
+	return fmt.Sprintf("%.2f %s", float64(b)/float64(div), units[exp])
 }
 
 func formatBps(bps int64) string {
-	return formatBytes(bps) + "/s"
+	return formatBytes(bps) + "/с"
 }
 
 // --- JSON API Handlers for React SPA & API Clients ---
@@ -1947,7 +2046,7 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
@@ -1960,7 +2059,7 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Некорректный JSON"})
 		return
 	}
 
@@ -2036,11 +2135,11 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[Session Error] Failed to insert admin session: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось создать сессию"})
 		return
 	}
 
-	s.auditLog.Log("admin", admin.ID, "admin_login_api", "admin_user", fmt.Sprintf("%d", admin.ID), clientIP, "Admin logged in via API")
+	s.auditLog.Log("admin", admin.ID, "admin_login_api", "admin_user", fmt.Sprintf("%d", admin.ID), clientIP, "Администратор вошёл через API")
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "homeshare_session",
@@ -2102,7 +2201,7 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	sess, person, admin := s.getSession(r)
 	if sess == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется авторизация"})
 		return
 	}
 
@@ -2185,6 +2284,7 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 			"local_download_bytes":    locDown,
 			"download_limit_bytes":    userDownloadLimitBytes,
 			"max_file_size_bytes":     userMaxFileSizeBytes,
+			"allow_user_keep_forever": person != nil && person.AllowUserKeepForever,
 		},
 		"traffic": map[string]interface{}{
 			"month":                   month,
@@ -2214,7 +2314,7 @@ func (s *Server) handleAPIFiles(w http.ResponseWriter, r *http.Request) {
 	sess, person, admin := s.getSession(r)
 	if sess == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется авторизация"})
 		return
 	}
 
@@ -2288,7 +2388,8 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		rows, err := s.db.Query(`
 			SELECT id, person_id, code_prefix, enabled, max_activations, activations_used, expires_at, created_at
-			FROM invite_codes ORDER BY created_at DESC
+			FROM invite_codes WHERE enabled = 1 AND activations_used < max_activations
+			ORDER BY created_at DESC
 		`)
 		if err != nil {
 			json.NewEncoder(w).Encode([]interface{}{})
@@ -2369,7 +2470,7 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[Invite Error] %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create invite"})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось создать инвайт"})
 			return
 		}
 
@@ -2386,7 +2487,7 @@ func (s *Server) handleAPIAdminInvites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusMethodNotAllowed)
-	json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+	json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 }
 
 func (s *Server) handleAPIAdminInvitesRevoke(w http.ResponseWriter, r *http.Request) {
@@ -2400,7 +2501,7 @@ func (s *Server) handleAPIAdminInvitesRevoke(w http.ResponseWriter, r *http.Requ
 
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
@@ -2408,14 +2509,14 @@ func (s *Server) handleAPIAdminInvitesRevoke(w http.ResponseWriter, r *http.Requ
 	inviteID = strings.TrimPrefix(inviteID, "/")
 	if inviteID == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invite ID is required"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не указан идентификатор инвайта"})
 		return
 	}
 
 	_, err := s.db.Exec("DELETE FROM invite_codes WHERE id = ?", inviteID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to delete invite code"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось удалить инвайт-код"})
 		return
 	}
 
@@ -2436,7 +2537,7 @@ func (s *Server) handleAPIAdminSessions(w http.ResponseWriter, r *http.Request) 
 		sessID, _ := strconv.ParseInt(sessIDStr, 10, 64)
 		if sessID > 0 {
 			_, _ = s.db.Exec("UPDATE device_sessions SET revoked = 1 WHERE id = ?", sessID)
-			json.NewEncoder(w).Encode(map[string]interface{}{"message": "Session revoked", "id": sessID})
+			json.NewEncoder(w).Encode(map[string]interface{}{"message": "Сессия отозвана", "id": sessID})
 			return
 		}
 	}
@@ -2486,7 +2587,7 @@ func (s *Server) handleAPIAdminQuarantineApprove(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 	sess, _, admin := s.getSession(r)
@@ -2503,13 +2604,13 @@ func (s *Server) handleAPIAdminQuarantineApprove(w http.ResponseWriter, r *http.
 		if err == nil {
 			rows, _ := res.RowsAffected()
 			if rows > 0 {
-				json.NewEncoder(w).Encode(map[string]string{"message": "File quarantine approved", "id": fileID})
+				json.NewEncoder(w).Encode(map[string]string{"message": "Файл выпущен из карантина", "id": fileID})
 				return
 			}
 		}
 	}
 	w.WriteHeader(http.StatusNotFound)
-	json.NewEncoder(w).Encode(map[string]string{"error": "File not found"})
+	json.NewEncoder(w).Encode(map[string]string{"error": "Файл не найден"})
 }
 
 func (s *Server) handleSPAFallback(w http.ResponseWriter, r *http.Request) {
@@ -2534,7 +2635,7 @@ func (s *Server) handleAPIAdminPeople(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT id, label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, created_at
+		SELECT id, label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, allow_user_keep_forever, created_at
 		FROM people WHERE id > 0 ORDER BY id ASC
 	`)
 	if err != nil {
@@ -2548,9 +2649,10 @@ func (s *Server) handleAPIAdminPeople(w http.ResponseWriter, r *http.Request) {
 		var id int64
 		var label, notes string
 		var enabled bool
+		var allowKeepForever bool
 		var quota, upLim, downLim, maxFile int64
 		var createdAt time.Time
-		_ = rows.Scan(&id, &label, &notes, &enabled, &quota, &upLim, &downLim, &maxFile, &createdAt)
+		_ = rows.Scan(&id, &label, &notes, &enabled, &quota, &upLim, &downLim, &maxFile, &allowKeepForever, &createdAt)
 		list = append(list, map[string]interface{}{
 			"id":                           id,
 			"label":                        label,
@@ -2560,6 +2662,7 @@ func (s *Server) handleAPIAdminPeople(w http.ResponseWriter, r *http.Request) {
 			"monthly_upload_limit_bytes":   upLim,
 			"monthly_download_limit_bytes": downLim,
 			"max_file_size_bytes":          maxFile,
+			"allow_user_keep_forever":      allowKeepForever,
 			"created_at":                   createdAt.Format(time.RFC3339),
 		})
 	}
@@ -2590,6 +2693,7 @@ func (s *Server) handleAPIAdminPeopleCreate(w http.ResponseWriter, r *http.Reque
 		MonthlyUploadLimitGB   float64 `json:"monthly_upload_limit_gb"`
 		MonthlyDownloadLimitGB float64 `json:"monthly_download_limit_gb"`
 		MaxFileSizeGB          float64 `json:"max_file_size_gb"`
+		AllowUserKeepForever   bool    `json:"allow_user_keep_forever"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if strings.TrimSpace(req.Label) == "" {
@@ -2623,9 +2727,9 @@ func (s *Server) handleAPIAdminPeopleCreate(w http.ResponseWriter, r *http.Reque
 			UPDATE people SET
 				label = ?, notes = ?, storage_quota_bytes = ?,
 				monthly_upload_limit_bytes = ?, monthly_download_limit_bytes = ?,
-				max_file_size_bytes = ?
+				max_file_size_bytes = ?, allow_user_keep_forever = ?
 			WHERE id = ?
-		`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, req.ID)
+		`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, req.AllowUserKeepForever, req.ID)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Ошибка обновления профиля"})
@@ -2638,7 +2742,7 @@ func (s *Server) handleAPIAdminPeopleCreate(w http.ResponseWriter, r *http.Reque
 	res, err := s.db.Exec(`
 		INSERT INTO people (label, notes, enabled, storage_quota_bytes, monthly_upload_limit_bytes, monthly_download_limit_bytes, max_file_size_bytes, max_concurrent_uploads, allow_user_keep_forever, session_idle_days, session_absolute_days, ignore_traffic_quota, created_at, last_activity_at)
 		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-	`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, s.cfg.Limits.MaxConcurrentUploads, s.cfg.Limits.AllowUserKeepForever, s.cfg.Sessions.UserIdleDays, s.cfg.Sessions.UserAbsoluteDays)
+	`, req.Label, req.Notes, storageQuota, uploadLimit, downloadLimit, maxFileSize, s.cfg.Limits.MaxConcurrentUploads, req.AllowUserKeepForever, s.cfg.Sessions.UserIdleDays, s.cfg.Sessions.UserAbsoluteDays)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -2761,12 +2865,12 @@ func (s *Server) handleAPIAdminAudit(w http.ResponseWriter, r *http.Request) {
 		list = append(list, map[string]interface{}{
 			"id":          id,
 			"time":        timeVal.Format("02.01.2006 15:04:05"),
-			"actor_type":  actorType,
+			"actor_type":  localizeAuditActor(actorType),
 			"actor_id":    actorID,
-			"event":       event,
+			"event":       localizeAuditEvent(event),
 			"entity_type": entityType,
 			"entity_id":   entityID,
-			"details":     details,
+			"details":     localizeAuditDetails(details),
 		})
 	}
 	if list == nil {
@@ -2834,7 +2938,7 @@ func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
 			if !s.validateCSRFToken(r) {
 				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid CSRF Token"})
+				json.NewEncoder(w).Encode(map[string]string{"error": "Некорректный CSRF-токен"})
 				return
 			}
 		} else if r.Method == "GET" {
@@ -2867,14 +2971,14 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
 	sess, person, admin := s.getSession(r)
 	if sess == nil && person == nil && admin == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется авторизация"})
 		return
 	}
 
@@ -2884,10 +2988,11 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 		Size         int64  `json:"size"`
 		ContentType  string `json:"content_type"`
 		ExpiryDays   int    `json:"expiry_days"`
+		KeepForever  bool   `json:"keep_forever"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Некорректный JSON"})
 		return
 	}
 
@@ -2903,10 +3008,7 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	expiryDays := req.ExpiryDays
-	if expiryDays <= 0 {
-		expiryDays = s.cfg.Limits.DefaultExpiryDays
-	}
+	_, expiryDays := resolveUploadRetention(person, req.KeepForever, req.ExpiryDays, s.cfg.Limits.DefaultExpiryDays)
 
 	var personID int64
 	if person != nil {
@@ -2939,7 +3041,7 @@ func (s *Server) handleAPIUploadReserve(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		log.Printf("[Upload Reserve Error] %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reserve upload"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось зарезервировать загрузку"})
 		return
 	}
 
@@ -2955,7 +3057,7 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
@@ -2981,7 +3083,7 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Upload not found"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Загрузка не найдена"})
 		return
 	}
 
@@ -2998,37 +3100,37 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 
 	if auth.HashWithSalt(secret, s.cfg.Secrets.IPSalt) != u.UploadSecretHash {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Неверный секрет загрузки"})
 		return
 	}
 
 	sess, person, admin := s.getSession(r)
 	if sess == nil && person == nil && admin == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется авторизация"})
 		return
 	}
 	if u.PersonID != 0 {
 		if person == nil || person.ID != u.PersonID {
 			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Person mismatch"})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Загрузка принадлежит другому пользователю"})
 			return
 		}
 		if u.SessionID.Valid && u.SessionID.Int64 != 0 && sess != nil && u.SessionID.Int64 != sess.ID {
 			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Session mismatch"})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Загрузка принадлежит другой сессии"})
 			return
 		}
 	} else if admin == nil && (sess == nil || !sess.IsAdmin) {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized: Admin required"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется доступ администратора"})
 		return
 	}
 
 	f, _, err := s.sm.PreparePartFile(uploadID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to prepare part file"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось подготовить временный файл"})
 		return
 	}
 	defer f.Close()
@@ -3041,7 +3143,7 @@ func (s *Server) handleAPIUploadChunk(w http.ResponseWriter, r *http.Request) {
 	written, err := io.Copy(f, r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to write chunk"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось записать фрагмент файла"})
 		return
 	}
 
@@ -3058,7 +3160,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
@@ -3068,7 +3170,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Некорректный JSON"})
 		return
 	}
 
@@ -3089,13 +3191,13 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Upload not found"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Загрузка не найдена"})
 		return
 	}
 
 	if auth.HashWithSalt(req.Secret, s.cfg.Secrets.IPSalt) != u.UploadSecretHash {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid upload secret"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Неверный секрет загрузки"})
 		return
 	}
 
@@ -3103,7 +3205,7 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	finalPath, err := s.sm.FinalizeUpload(req.UploadID, fileID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to finalize upload"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось завершить загрузку"})
 		return
 	}
 
@@ -3157,9 +3259,10 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	}
 
 	now := time.Now().UTC()
+	keepForever, expiryDays := resolveUploadRetention(person, u.ExpiryDays == 0, u.ExpiryDays, s.cfg.Limits.DefaultExpiryDays)
 	var expAt *time.Time
-	if u.ExpiryDays > 0 {
-		t := now.Add(time.Duration(u.ExpiryDays) * 24 * time.Hour)
+	if !keepForever {
+		t := now.Add(time.Duration(expiryDays) * 24 * time.Hour)
 		expAt = &t
 	}
 
@@ -3184,13 +3287,13 @@ func (s *Server) handleAPIUploadComplete(w http.ResponseWriter, r *http.Request)
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at, client_ip_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, fileID, pID, uploaderName, u.OriginalName, storedRelPath, actualSize, contentType, status, flagged, flagReason, now, expAt, ipHash)
+		INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, keep_forever, created_at, expires_at, client_ip_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, fileID, pID, uploaderName, u.OriginalName, storedRelPath, actualSize, contentType, status, flagged, flagReason, keepForever, now, expAt, ipHash)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file metadata"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось сохранить данные файла"})
 		return
 	}
 
@@ -3215,14 +3318,14 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
 	sess, person, admin := s.getSession(r)
 	if sess == nil && person == nil && admin == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется авторизация"})
 		return
 	}
 
@@ -3274,14 +3377,14 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	finalPath := s.sm.GetShardedPath(fileID)
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0750); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create directory"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось создать каталог"})
 		return
 	}
 
 	out, err := os.Create(finalPath)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create file"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось создать файл"})
 		return
 	}
 	defer out.Close()
@@ -3289,7 +3392,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	written, err := io.Copy(out, reader)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось сохранить файл"})
 		return
 	}
 
@@ -3339,6 +3442,7 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	requestedKeepForever := r.FormValue("keep_forever") == "true" || r.Header.Get("X-Keep-Forever") == "true"
 	expiryDays := s.cfg.Limits.DefaultExpiryDays
 	if expStr := r.FormValue("expiry_days"); expStr != "" {
 		if v, err := strconv.Atoi(expStr); err == nil && v > 0 {
@@ -3349,9 +3453,14 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 			expiryDays = v
 		}
 	}
+	keepForever, expiryDays := resolveUploadRetention(person, requestedKeepForever, expiryDays, s.cfg.Limits.DefaultExpiryDays)
 
 	now := time.Now().UTC()
-	expAt := now.Add(time.Duration(expiryDays) * 24 * time.Hour)
+	var expAt *time.Time
+	if !keepForever {
+		t := now.Add(time.Duration(expiryDays) * 24 * time.Hour)
+		expAt = &t
+	}
 	storedRelPath, _ := filepath.Rel(s.cfg.Paths.DataDir, finalPath)
 	if storedRelPath == "" {
 		storedRelPath = filepath.Base(finalPath)
@@ -3375,24 +3484,24 @@ func (s *Server) handleAPIUploadDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, created_at, expires_at, client_ip_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, fileID, pID, uploaderName, filename, storedRelPath, size, contentType, status, flagged, flagReason, now, expAt, ipHash)
+		INSERT INTO files (id, person_id, uploader_name, original_name, stored_path, size, content_type, status, flagged, flag_reason, keep_forever, created_at, expires_at, client_ip_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, fileID, pID, uploaderName, filename, storedRelPath, size, contentType, status, flagged, flagReason, keepForever, now, expAt, ipHash)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file metadata"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось сохранить данные файла"})
 		return
 	}
 
 	_ = s.tm.RecordUploadCompleted(pID, size, s.netChecker.IsLocal(r))
 	if person != nil {
-		s.auditLog.Log("person", person.ID, "upload_file", "file", fileID, clientIP, fmt.Sprintf("Uploaded '%s' (%s)", filename, formatBytes(size)))
+		s.auditLog.Log("person", person.ID, "upload_file", "file", fileID, clientIP, fmt.Sprintf("Загружен '%s' (%s)", filename, formatBytes(size)))
 	} else if admin != nil {
-		s.auditLog.Log("admin", admin.ID, "upload_file", "file", fileID, clientIP, fmt.Sprintf("Admin uploaded '%s' (%s)", filename, formatBytes(size)))
+		s.auditLog.Log("admin", admin.ID, "upload_file", "file", fileID, clientIP, fmt.Sprintf("Администратор загрузил '%s' (%s)", filename, formatBytes(size)))
 	}
 	if flagged {
-		s.auditLog.Log("system", 0, "file_quarantined", "file", fileID, clientIP, fmt.Sprintf("Quarantined '%s': %s", filename, flagReason))
+		s.auditLog.Log("system", 0, "file_quarantined", "file", fileID, clientIP, fmt.Sprintf("Отправлен в карантин '%s': %s", filename, flagReason))
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3412,14 +3521,14 @@ func (s *Server) handleAPIFilesDelete(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
 	sess, person, admin := s.getSession(r)
 	if sess == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Требуется авторизация"})
 		return
 	}
 
@@ -3427,7 +3536,7 @@ func (s *Server) handleAPIFilesDelete(w http.ResponseWriter, r *http.Request) {
 	fileID = strings.TrimPrefix(fileID, "/")
 	if fileID == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Missing file ID"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не указан идентификатор файла"})
 		return
 	}
 
@@ -3435,7 +3544,7 @@ func (s *Server) handleAPIFilesDelete(w http.ResponseWriter, r *http.Request) {
 	err := s.db.QueryRow("SELECT id, person_id, stored_path, protected FROM files WHERE id = ?", fileID).Scan(&f.ID, &f.PersonID, &f.StoredPath, &f.Protected)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "File not found"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Файл не найден"})
 		return
 	}
 
@@ -3443,7 +3552,7 @@ func (s *Server) handleAPIFilesDelete(w http.ResponseWriter, r *http.Request) {
 	if !isAdminSession {
 		if person == nil || person.ID == 0 || f.PersonID != person.ID || f.Protected {
 			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden: Вы можете удалять только свои собственные файлы"})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Вы можете удалять только свои собственные файлы"})
 			return
 		}
 	}
@@ -3453,19 +3562,19 @@ func (s *Server) handleAPIFilesDelete(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := netutils.GetClientIP(r)
 	if person != nil {
-		s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, clientIP, "User deleted file via API")
+		s.auditLog.Log("person", person.ID, "delete_file", "file", fileID, clientIP, "Пользователь удалил файл через API")
 	} else if admin != nil {
-		s.auditLog.Log("admin", admin.ID, "delete_file", "file", fileID, clientIP, "Admin deleted file via API")
+		s.auditLog.Log("admin", admin.ID, "delete_file", "file", fileID, clientIP, "Администратор удалил файл через API")
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "File deleted"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Файл удалён"})
 }
 
 func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Метод не поддерживается"})
 		return
 	}
 
@@ -3485,7 +3594,7 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Некорректный запрос"})
 		return
 	}
 
@@ -3543,7 +3652,11 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	_, _ = s.db.Exec("UPDATE invite_codes SET activations_used = activations_used + 1 WHERE id = ?", inv.ID)
+	if err := consumeInviteActivation(s.db, inv.ID); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Инвайт уже использован"})
+		return
+	}
 
 	token := auth.GenerateRandomToken(32)
 	tokenHash := auth.HashWithSalt(token, s.cfg.Secrets.SessionSecret)
@@ -3559,7 +3672,7 @@ func (s *Server) handleAPIInviteActivate(w http.ResponseWriter, r *http.Request)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Не удалось создать сессию"})
 		return
 	}
 

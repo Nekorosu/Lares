@@ -35,6 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
 async function handleFileSelect(file) {
   const expiryDaysSelect = document.getElementById('expiryDays');
   const expiryDays = expiryDaysSelect ? parseInt(expiryDaysSelect.value, 10) : 14;
+  const keepForeverInput = document.getElementById('keepForever');
+  const keepForever = Boolean(keepForeverInput && keepForeverInput.checked);
 
   const progressSection = document.getElementById('progressSection');
   const progressBar = document.getElementById('progressBar');
@@ -53,7 +55,8 @@ async function handleFileSelect(file) {
         filename: file.name,
         size: file.size,
         content_type: file.type || 'application/octet-stream',
-        expiry_days: expiryDays
+        expiry_days: expiryDays,
+        keep_forever: keepForever
       })
     });
 
@@ -136,9 +139,9 @@ async function handleFileSelect(file) {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  if (bytes === 0) return '0 Б';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const sizes = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }

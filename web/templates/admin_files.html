@@ -1,5 +1,5 @@
 {{define "content"}}
-<h2>Управление файлами (Files)</h2>
+<h2>Управление файлами</h2>
 
 <div class="card">
   <form method="GET" action="/admin/files" style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
@@ -11,7 +11,7 @@
       <label>Фильтр статуса</label>
       <select name="status" class="form-control">
         <option value="">Все статусы</option>
-        <option value="ready" {{if eq .StatusFilter "ready"}}selected{{end}}>Готовы (Ready)</option>
+        <option value="ready" {{if eq .StatusFilter "ready"}}selected{{end}}>Готовые</option>
         <option value="quarantined" {{if eq .StatusFilter "quarantined"}}selected{{end}}>Карантин</option>
         <option value="flagged" {{if eq .StatusFilter "flagged"}}selected{{end}}>Помеченные</option>
         <option value="protected" {{if eq .StatusFilter "protected"}}selected{{end}}>Защищенные</option>
@@ -43,11 +43,11 @@
         <td>{{.CreatedAtFormatted}}</td>
         <td>
           {{if eq .Status "ready"}}
-            <span class="badge badge-green">Ready</span>
+            <span class="badge badge-green">Готов</span>
           {{else}}
-            <span class="badge badge-amber">Quarantined</span>
+            <span class="badge badge-amber">В карантине</span>
           {{end}}
-          {{if .Protected}}<span class="badge badge-blue">Protected</span>{{end}}
+          {{if .Protected}}<span class="badge badge-blue">Защищён</span>{{end}}
         </td>
         <td>
           {{if .KeepForever}}
@@ -60,11 +60,11 @@
           <a href="/download/{{.ID}}" class="btn btn-secondary btn-sm">Скачать</a>
           <form method="POST" action="/admin/files/toggle-protected/{{.ID}}" style="display: inline;">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit" class="btn btn-secondary btn-sm">{{if .Protected}}Unprotect{{else}}Protect{{end}}</button>
+            <button type="submit" class="btn btn-secondary btn-sm">{{if .Protected}}Снять защиту{{else}}Защитить{{end}}</button>
           </form>
           <form method="POST" action="/admin/files/toggle-forever/{{.ID}}" style="display: inline;">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit" class="btn btn-secondary btn-sm">{{if .KeepForever}}Unkeep{{else}}Keep Forever{{end}}</button>
+            <button type="submit" class="btn btn-secondary btn-sm">{{if .KeepForever}}Ограничить срок{{else}}Хранить бессрочно{{end}}</button>
           </form>
           <form method="POST" action="/admin/files/delete/{{.ID}}" style="display: inline;" onsubmit="return confirm('Удалить файл безоткатно?');">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">

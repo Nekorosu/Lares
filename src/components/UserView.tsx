@@ -42,6 +42,7 @@ interface UserQuota {
   download_used_bytes: number;
   download_limit_bytes: number;
   max_file_size_bytes: number;
+  allow_user_keep_forever?: boolean;
 }
 
 interface ServerStats {
@@ -84,6 +85,7 @@ export default function UserView({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
   const [selectedExpiryDays, setSelectedExpiryDays] = useState<number>(14);
+  const [keepForever, setKeepForever] = useState<boolean>(false);
   const [selectedFileForUpload, setSelectedFileForUpload] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadStatusMsg, setUploadStatusMsg] = useState<string>('');
@@ -91,9 +93,9 @@ export default function UserView({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const formatBytes = (bytes: number): string => {
-    if (!bytes || bytes === 0) return '0 B';
+    if (!bytes || bytes === 0) return '0 Б';
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const sizes = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
@@ -133,6 +135,7 @@ export default function UserView({
     const adminToken = localStorage.getItem('lares_admin_token');
     const customHeaders: Record<string, string> = {
       'X-Expiry-Days': String(selectedExpiryDays),
+      'X-Keep-Forever': String(keepForever),
     };
     if (adminToken) {
       customHeaders['authorization'] = `Bearer ${adminToken}`;
@@ -145,6 +148,7 @@ export default function UserView({
       const formData = new FormData();
       formData.append('file', file);
       formData.append('expiry_days', String(selectedExpiryDays));
+      formData.append('keep_forever', String(keepForever));
 
       const res = await fetch('/api/files/upload/direct', {
         method: 'POST',
@@ -165,6 +169,7 @@ export default function UserView({
         setUploadProgress(null);
         setUploadStatusMsg('');
         setSelectedFileForUpload(null);
+        setKeepForever(false);
         refreshData();
       }, 800);
     } catch (err: any) {
@@ -222,8 +227,8 @@ export default function UserView({
   return (
     <div className="min-h-screen bg-[#f7f7f2] text-[#1a1a15] flex flex-col font-sans">
       {/* User Header */}
-      <header className="bg-white border-b border-[#e2e2d5] sticky top-0 z-30 px-4 md:px-8 py-3.5 flex justify-between items-center shadow-xs">
-        <div className="flex items-center gap-3">
+      <header className="bg-white border-b border-[#e2e2d5] sticky top-0 z-30 px-3 md:px-8 py-3.5 flex flex-wrap justify-between items-center gap-2 shadow-xs">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <div className="w-10 h-10 rounded-2xl bg-[#5A5A40] text-white flex items-center justify-center font-serif text-xl font-bold shadow-sm">
             L
           </div>
@@ -233,7 +238,7 @@ export default function UserView({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {/* Storage summary pill */}
           <div className="hidden sm:flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[#f0f0e0] border border-[#e2e2d5] text-xs font-medium text-[#5A5A40]">
             <HardDrive className="w-4 h-4 text-[#5A5A40]" />
@@ -326,7 +331,7 @@ export default function UserView({
 
             {/* Card 2: Upload Traffic */}
             <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5] space-y-2">
-              <span className="text-[#5A5A40] font-semibold uppercase tracking-wider block text-[10px]">Трафик загрузки (Upload / мес)</span>
+              <span className="text-[#5A5A40] font-semibold uppercase tracking-wider block text-[10px]">Трафик загрузки за месяц</span>
               <div className="text-lg font-bold font-mono text-[#1a1a15]">
                 {formatBytes(uploadUsed)} <span className="text-[#8c8c7a] font-normal text-xs">/ {formatBytes(uploadLimit)}</span>
               </div>
@@ -338,7 +343,7 @@ export default function UserView({
 
             {/* Card 3: Download Traffic */}
             <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5] space-y-2">
-              <span className="text-[#5A5A40] font-semibold uppercase tracking-wider block text-[10px]">Трафик скачивания (Download / мес)</span>
+              <span className="text-[#5A5A40] font-semibold uppercase tracking-wider block text-[10px]">Трафик скачивания за месяц</span>
               <div className="text-lg font-bold font-mono text-[#1a1a15]">
                 {formatBytes(downloadUsed)} <span className="text-[#8c8c7a] font-normal text-xs">/ {formatBytes(downloadLimit)}</span>
               </div>
@@ -395,7 +400,7 @@ export default function UserView({
 
           {/* Files Table */}
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[640px] text-left border-collapse">
               <thead>
                 <tr className="border-b border-[#f0f0e0] text-[11px] font-semibold text-[#8c8c7a] uppercase tracking-wider">
                   <th className="py-3 px-4">Имя файла</th>
@@ -470,12 +475,13 @@ export default function UserView({
       {/* MODAL: UPLOAD FILE WITH CONFIRMATION & RETENTION SELECTOR */}
       {showUploadModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 md:p-8 shadow-2xl relative border border-[#e2e2d5] space-y-6 animate-in fade-in zoom-in duration-200">
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-4 sm:p-6 md:p-8 shadow-2xl relative border border-[#e2e2d5] space-y-6 animate-in fade-in zoom-in duration-200">
             <button
               onClick={() => {
                 setShowUploadModal(false);
                 setSelectedFileForUpload(null);
                 setUploadProgress(null);
+                setKeepForever(false);
               }}
               className="absolute top-4 right-4 p-2 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
             >
@@ -493,7 +499,7 @@ export default function UserView({
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-3xl p-8 text-center cursor-pointer transition-all ${
+                className={`border-2 border-dashed rounded-3xl p-4 sm:p-8 text-center cursor-pointer transition-all ${
                   isDragging ? 'border-[#5A5A40] bg-[#5A5A40]/5' : 'border-[#e2e2d5] bg-[#fcfcf9] hover:border-[#5A5A40]/50'
                 }`}
               >
@@ -533,12 +539,15 @@ export default function UserView({
                   <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider">
                     Срок хранения файла
                   </label>
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                     {[1, 7, 14, 21, 30].map((days) => (
                       <button
                         key={days}
                         type="button"
-                        onClick={() => setSelectedExpiryDays(days)}
+                        onClick={() => {
+                          setSelectedExpiryDays(days);
+                          setKeepForever(false);
+                        }}
                         className={`py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${
                           selectedExpiryDays === days
                             ? 'bg-[#5A5A40] text-white border-[#5A5A40]'
@@ -549,6 +558,12 @@ export default function UserView({
                       </button>
                     ))}
                   </div>
+                  {userQuota?.allow_user_keep_forever && (
+                    <label className="flex items-center gap-2 text-xs font-semibold text-[#5A5A40] cursor-pointer">
+                      <input type="checkbox" checked={keepForever} onChange={(e) => setKeepForever(e.target.checked)} />
+                      Хранить бессрочно
+                    </label>
+                  )}
                 </div>
 
                 {/* Progress bar if uploading */}
@@ -568,7 +583,7 @@ export default function UserView({
                 )}
 
                 {/* Confirm upload button */}
-                <div className="flex justify-end gap-3 pt-2">
+                <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 pt-2">
                   <button
                     type="button"
                     onClick={() => setSelectedFileForUpload(null)}
