@@ -20,7 +20,7 @@ This checklist is based on the comprehensive requirements defined in `prompt.txt
 - [x] `files` table (id, size, status, quarantined, keep_forever, etc.)
 - [x] `traffic_counters` table (person_id, month, upload/download stats)
 - [x] `audit_logs` table (id, actor, event, entity, details)
-- [x] `security_log` file (`/var/log/homeshare/security.log`)
+- [x] `security_log` file (`/var/log/lares/security.log`)
 - [x] `rate_limit_locks` table
 - [x] `settings` table
 
@@ -66,7 +66,7 @@ This checklist is based on the comprehensive requirements defined in `prompt.txt
 - [x] Fail2ban config generation (`fail2ban/` dir exists).
 - [x] Rate limiting middleware (Admin login, Invite activation, Upload, Download, API).
 - [ ] Active Rate Limit Locks visible and resettable in Admin UI.
-- [x] Security logging to `/var/log/homeshare/security.log`.
+- [x] Security logging to `/var/log/lares/security.log`.
 
 ## 9. Admin CLI & Background Jobs
 - [x] CLI `admin create`, `admin delete`, `admin reset-totp`, `admin unlock`.

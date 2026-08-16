@@ -41,7 +41,7 @@
 
 ```bash
 # Клонируйте репозиторий
-git clone https://github.com/your-username/lares.git
+git clone https://github.com/Nekorosu/Lares.git
 cd lares
 
 # Скомпилируйте исполняемый Go-файл
@@ -51,12 +51,14 @@ go build -o homeshare ./cmd/homeshare
 ### 2. Подготовка каталогов на сервере
 
 ```bash
-# Создайте рабочие папки для файлов, временных файлов и базы данных
-sudo mkdir -p /srv/media/fileshare/{data,tmp,db}
-sudo mkdir -p /etc/lares /var/log/lares /home/fileshare-backup
+# Сервис работает только от отдельного системного пользователя homeshare
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin homeshare
 
-# Ограничьте права доступа
-sudo chmod -R 750 /srv/media/fileshare /etc/lares
+# Эти каталоги должны быть доступны для записи при ProtectSystem=strict
+sudo install -d -o homeshare -g homeshare -m 0750 \
+  /srv/media/fileshare /srv/media/fileshare/data \
+  /srv/media/fileshare/tmp /srv/media/fileshare/db \
+  /etc/lares /var/log/lares /home/fileshare-backup
 ```
 
 ### 3. Настройка конфигурации (`config.yaml`)
@@ -64,8 +66,8 @@ sudo chmod -R 750 /srv/media/fileshare /etc/lares
 Скопируйте пример файла конфигурации в `/etc/lares/config.yaml`:
 
 ```bash
-sudo cp config.yaml.example /etc/lares/config.yaml
-sudo chmod 640 /etc/lares/config.yaml
+sudo install -o homeshare -g homeshare -m 0640 \
+  config.yaml.example /etc/lares/config.yaml
 ```
 
 Отредактируйте необходимые параметры в `/etc/lares/config.yaml`:
@@ -98,29 +100,51 @@ speed_limits:
   external_upload_limit_mbps: 250
   external_download_limit_mbps: 250
   burst_mb: 16
+
+sessions:
+  user_idle_days: 30
+  user_absolute_days: 90
+  admin_idle_hours: 12
+  admin_absolute_days: 7
+
+invite_defaults:
+  expiry_days: 30
+  max_activations: 1
+
+secrets:
+  session_secret: ""
+  ip_salt: ""
 ```
+
+Пустые секреты при первом запуске генерируются криптографически стойким
+генератором и атомарно записываются обратно в `/etc/lares/config.yaml`.
+Сервис не ищет конфигурацию в `/etc/homeshare` или текущем каталоге. Старая
+плоская схема YAML всё ещё читается из выбранного файла (включая канонический
+путь), но fallback на старые пути отсутствует. При следующем сохранении файл
+записывается в канонической вложенной схеме.
 
 ### 4. Настройка автозапуска (systemd)
 
 Скопируйте бинарный файл и сервис:
 
 ```bash
-# Переместите бинарник в системную директорию
-sudo cp homeshare /usr/local/bin/homeshare
+# Установите бинарник и frontend bundle
+sudo install -o root -g root -m 0755 homeshare /usr/local/bin/homeshare
+npm install --no-package-lock
+npm run build
+sudo install -d -o root -g homeshare -m 0750 /usr/local/share/lares/dist
+sudo cp -r dist/. /usr/local/share/lares/dist/
+sudo chown -R root:homeshare /usr/local/share/lares/dist
 
 # Скопируйте файл службы
 sudo cp lares.service /etc/systemd/system/
 
-# Создайте отдельного системного пользователя
-sudo useradd -r -s /bin/false lares
-sudo chown -R lares:lares /srv/media/fileshare /etc/lares /var/log/lares
-
 # Перезагрузите systemd и запустите службу
 sudo systemctl daemon-reload
-sudo systemctl enable --now lares
+sudo systemctl enable --now lares.service
 
 # Проверьте статус службы
-sudo systemctl status lares
+sudo systemctl status lares.service
 ```
 
 ### 5. Настройка Reverse Proxy (Caddy)

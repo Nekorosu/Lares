@@ -35,16 +35,18 @@ function initUploader() {
 async function handleFiles(files) {
   const expirySelect = document.getElementById('expirySelect');
   const expiryDays = expirySelect ? parseInt(expirySelect.value) : 14;
+  const keepForeverInput = document.getElementById('keepForever');
+  const keepForever = Boolean(keepForeverInput && keepForeverInput.checked);
 
   for (let i = 0; i < files.length; i++) {
-    await uploadFileChunked(files[i], expiryDays);
+    await uploadFileChunked(files[i], expiryDays, keepForever);
   }
 }
 
-async function uploadFileChunked(file, expiryDays) {
+async function uploadFileChunked(file, expiryDays, keepForever) {
   const statusEl = document.getElementById('uploadStatus');
   const progressEl = document.getElementById('uploadProgress');
-  if (statusEl) statusEl.textContent = `Зазервирование места для ${file.name}...`;
+  if (statusEl) statusEl.textContent = `Резервирование места для ${file.name}...`;
 
   try {
     // 1. Create Upload Reservation
@@ -55,7 +57,8 @@ async function uploadFileChunked(file, expiryDays) {
         filename: file.name,
         size: file.size,
         content_type: file.type || 'application/octet-stream',
-        expiry_days: expiryDays
+        expiry_days: expiryDays,
+        keep_forever: keepForever
       })
     });
 

@@ -1,5 +1,5 @@
 {{define "content"}}
-<h2>Файлы в карантине (Quarantine)</h2>
+<h2>Файлы в карантине</h2>
 
 <div class="card">
   {{if .Files}}
@@ -25,7 +25,7 @@
         <td style="display: flex; gap: 0.5rem;">
           <form method="POST" action="/admin/quarantine/approve/{{.ID}}" style="display: inline;">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <button type="submit" class="btn btn-primary btn-sm">Одобрить (Approve)</button>
+            <button type="submit" class="btn btn-primary btn-sm">Одобрить</button>
           </form>
           <form method="POST" action="/admin/files/delete/{{.ID}}" style="display: inline;" onsubmit="return confirm('Удалить файл?');">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">

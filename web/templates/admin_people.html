@@ -1,17 +1,17 @@
 {{define "content"}}
-<h2>Управление пользователями (People)</h2>
+<h2>Управление пользователями</h2>
 
 <div class="card">
-  <h3>Создать пользователя (Person)</h3>
+  <h3>Создать пользователя</h3>
   <form method="POST" action="/admin/people/create">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="grid">
       <div class="form-group">
-        <label>Имя / Метка (Label)</label>
+        <label>Имя / метка</label>
         <input type="text" name="label" class="form-control" placeholder="Например: Александр" required>
       </div>
       <div class="form-group">
-        <label>Заметки (Notes)</label>
+        <label>Заметки</label>
         <input type="text" name="notes" class="form-control" placeholder="Доп. информация">
       </div>
       <div class="form-group">
@@ -35,7 +35,7 @@
       <label><input type="checkbox" name="ignore_traffic_quota" value="true"> Игнорировать трафик-квоту</label>
       <label><input type="checkbox" name="allow_user_keep_forever" value="true"> Разрешить «хранить бессрочно»</label>
     </div>
-    <button type="submit" class="btn btn-primary">Создать Person</button>
+    <button type="submit" class="btn btn-primary">Создать пользователя</button>
   </form>
 </div>
 
@@ -79,7 +79,7 @@
               <button type="submit" class="btn btn-primary btn-sm">Включить</button>
             </form>
           {{end}}
-          <form method="POST" action="/admin/people/delete/{{.ID}}" style="display: inline;" onsubmit="return confirm('Удалить пользователя? Нажмите OK для сохранения файлов как осиротевших, или Cancel для отмены.');">
+          <form method="POST" action="/admin/people/delete/{{.ID}}" style="display: inline;" onsubmit="return confirm('Удалить пользователя? Его файлы будут сохранены без владельца.');">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-danger btn-sm">Удалить</button>
           </form>

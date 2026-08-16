@@ -17,7 +17,6 @@ import (
 	"lares/internal/db"
 )
 
-
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		handleAdminCLI(os.Args[2:])
@@ -30,7 +29,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	database, err := db.InitDB(cfg.DBPath)
+	database, err := db.InitDB(cfg.Paths.DBPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -42,11 +41,11 @@ func main() {
 	}
 
 	httpServer := &http.Server{
-		Addr:         cfg.Listen,
-		Handler:      server.Routes(),
+		Addr:              cfg.Listen,
+		Handler:           server.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout: 60 * time.Minute, // Long timeout for large streaming uploads/downloads
-		IdleTimeout:  60 * time.Second,
+		WriteTimeout:      60 * time.Minute, // Long timeout for large streaming uploads/downloads
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -82,7 +81,7 @@ func handleAdminCLI(args []string) {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	database, err := db.InitDB(cfg.DBPath)
+	database, err := db.InitDB(cfg.Paths.DBPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}

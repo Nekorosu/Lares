@@ -55,6 +55,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
   const [newUploadGB, setNewUploadGB] = useState<number>(200);
   const [newDownloadGB, setNewDownloadGB] = useState<number>(300);
   const [newMaxFileGB, setNewMaxFileGB] = useState<number>(50);
+  const [newAllowKeepForever, setNewAllowKeepForever] = useState<boolean>(false);
 
   // Edit Person Modal State
   const [editingPerson, setEditingPerson] = useState<any | null>(null);
@@ -139,11 +140,13 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
           monthly_upload_limit_gb: newUploadGB,
           monthly_download_limit_gb: newDownloadGB,
           max_file_size_gb: newMaxFileGB,
+          allow_user_keep_forever: newAllowKeepForever,
         }),
       });
       if (res.ok) {
         setNewPersonLabel('');
         setNewPersonNotes('');
+        setNewAllowKeepForever(false);
         loadTabData();
       }
     } catch (err) {
@@ -165,6 +168,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
           monthly_upload_limit_gb: editingPerson.monthly_upload_limit_gb,
           monthly_download_limit_gb: editingPerson.monthly_download_limit_gb,
           max_file_size_gb: editingPerson.max_file_size_gb,
+          allow_user_keep_forever: Boolean(editingPerson.allow_user_keep_forever),
         }),
       });
       if (res.ok) {
@@ -250,9 +254,9 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
   };
 
   const formatBytes = (bytes: number): string => {
-    if (!bytes || bytes === 0) return '0 B';
+    if (!bytes || bytes === 0) return '0 Б';
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const sizes = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
@@ -260,6 +264,11 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
   const bytesToGB = (bytes: number): number => {
     return Math.round((bytes / (1024 * 1024 * 1024)) * 100) / 100;
   };
+
+  const formatStatus = (status: string): string => ({
+    ready: 'Готов', quarantined: 'В карантине', reserved: 'Зарезервировано',
+    uploading: 'Загружается', completed: 'Завершено', aborted: 'Прервано',
+  }[status] || status);
 
   const tabs = [
     { id: 'dashboard', label: 'Дашборд', icon: BarChart3 },
@@ -278,8 +287,8 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
   return (
     <div className="min-h-screen bg-[#f4f4ee] text-[#1a1a15] flex flex-col font-sans">
       {/* Top Header */}
-      <header className="bg-[#1a1a15] text-white px-6 py-4 flex justify-between items-center shadow-md">
-        <div className="flex items-center gap-3">
+      <header className="bg-[#1a1a15] text-white px-3 sm:px-6 py-4 flex flex-wrap justify-between items-center gap-3 shadow-md">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <div className="w-9 h-9 rounded-xl bg-[#5A5A40] text-white flex items-center justify-center font-bold font-serif text-lg">
             A
           </div>
@@ -333,7 +342,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
         </aside>
 
         {/* Tab Content Area */}
-        <main className="flex-1 bg-white rounded-3xl p-6 border border-[#e2e2d5] shadow-xs min-h-[500px]">
+        <main className="min-w-0 flex-1 bg-white rounded-3xl p-3 sm:p-6 border border-[#e2e2d5] shadow-xs min-h-[500px]">
           {loading ? (
             <div className="flex items-center justify-center py-24 text-[#8c8c7a]">
               <RefreshCw className="w-6 h-6 animate-spin mr-2" />
@@ -368,7 +377,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                     </div>
 
                     <div className="bg-[#fcfcf9] p-5 rounded-2xl border border-[#e2e2d5]">
-                      <span className="text-xs text-[#5A5A40] font-semibold uppercase block tracking-wider">Внешний трафик (External)</span>
+                      <span className="text-xs text-[#5A5A40] font-semibold uppercase block tracking-wider">Внешний трафик</span>
                       <div className="text-2xl font-bold font-mono text-[#1a1a15] mt-1">
                         {formatBytes(stats?.traffic?.external_total_bytes || 0)}
                       </div>
@@ -378,7 +387,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                     </div>
 
                     <div className="bg-[#fcfcf9] p-5 rounded-2xl border border-[#e2e2d5]">
-                      <span className="text-xs text-[#5A5A40] font-semibold uppercase block tracking-wider">Локальный трафик (Local)</span>
+                      <span className="text-xs text-[#5A5A40] font-semibold uppercase block tracking-wider">Локальный трафик</span>
                       <div className="text-2xl font-bold font-mono text-emerald-800 mt-1">
                         {formatBytes(stats?.traffic?.local_total_bytes || 0)}
                       </div>
@@ -453,7 +462,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                     
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[11px] font-semibold text-[#5A5A40] mb-1">Имя профиля (Label)</label>
+                        <label className="block text-[11px] font-semibold text-[#5A5A40] mb-1">Имя профиля</label>
                         <input
                           type="text"
                           placeholder="например, 'Алексей'"
@@ -474,7 +483,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 border-t border-[#f0f0e0]">
+                    <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-4 gap-3 pt-1 border-t border-[#f0f0e0]">
                       <div>
                         <label className="block text-[10px] font-semibold text-[#8c8c7a] mb-1">Квота диска (ГБ)</label>
                         <input
@@ -520,6 +529,10 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                         />
                       </div>
                     </div>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-[#5A5A40]">
+                      <input type="checkbox" checked={newAllowKeepForever} onChange={(e) => setNewAllowKeepForever(e.target.checked)} />
+                      Разрешить пользователю хранить файлы бессрочно
+                    </label>
 
                     <div className="flex justify-end pt-1">
                       <button
@@ -580,6 +593,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                                     monthly_upload_limit_gb: bytesToGB(person.monthly_upload_limit_bytes),
                                     monthly_download_limit_gb: bytesToGB(person.monthly_download_limit_bytes),
                                     max_file_size_gb: bytesToGB(person.max_file_size_bytes),
+                                    allow_user_keep_forever: Boolean(person.allow_user_keep_forever),
                                   })}
                                   title="Редактировать лимиты"
                                   className="p-1.5 rounded-xl border border-[#e2e2d5] bg-[#fcfcf9] text-[#5A5A40] hover:bg-[#e2e2d5]/50 transition-colors cursor-pointer"
@@ -616,11 +630,11 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                                 <span className="font-mono text-[#1a1a15] font-semibold">{formatBytes(person.storage_quota_bytes)}</span>
                               </div>
                               <div>
-                                <span className="block text-[10px] uppercase font-semibold text-[#5A5A40]">Upload limit</span>
+                                <span className="block text-[10px] uppercase font-semibold text-[#5A5A40]">Лимит загрузки</span>
                                 <span className="font-mono text-[#1a1a15] font-semibold">{formatBytes(person.monthly_upload_limit_bytes)}</span>
                               </div>
                               <div>
-                                <span className="block text-[10px] uppercase font-semibold text-[#5A5A40]">Download limit</span>
+                                <span className="block text-[10px] uppercase font-semibold text-[#5A5A40]">Лимит скачивания</span>
                                 <span className="font-mono text-[#1a1a15] font-semibold">{formatBytes(person.monthly_download_limit_bytes)}</span>
                               </div>
                               <div>
@@ -643,8 +657,8 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                                     const codeText = inv.code_prefix || inv.code || 'XXXX-XXXX';
                                     const keyId = `inv_${inv.id}`;
                                     return (
-                                      <div key={inv.id} className="bg-white p-2.5 rounded-lg border border-[#e2e2d5] flex justify-between items-center text-xs">
-                                        <div className="flex items-center gap-2">
+                                      <div key={inv.id} className="bg-white p-2.5 rounded-lg border border-[#e2e2d5] flex flex-col min-[420px]:flex-row justify-between items-start min-[420px]:items-center gap-2 text-xs">
+                                        <div className="flex flex-wrap items-center gap-2 min-w-0">
                                           <span className="font-mono font-bold text-[#1a1a15]">{codeText}</span>
                                           <button
                                             onClick={() => copyToClipboard(codeText, keyId)}
@@ -683,11 +697,11 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                 <div className="space-y-6">
                   <h2 className="font-serif text-xl font-bold text-[#1a1a15]">Сессии устройств</h2>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                    <table className="w-full min-w-[640px] text-left border-collapse">
                       <thead>
                         <tr className="border-b border-[#f0f0e0] text-[11px] font-semibold text-[#8c8c7a] uppercase">
                           <th className="py-2 px-3">Устройство / Пользователь</th>
-                          <th className="py-2 px-3">IP Hash</th>
+                          <th className="py-2 px-3">Хеш IP</th>
                           <th className="py-2 px-3">Статус</th>
                           <th className="py-2 px-3 text-right">Действие</th>
                         </tr>
@@ -725,7 +739,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                 <div className="space-y-6">
                   <h2 className="font-serif text-xl font-bold text-[#1a1a15]">Все файлы в системе ({files.length})</h2>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                    <table className="w-full min-w-[640px] text-left border-collapse">
                       <thead>
                         <tr className="border-b border-[#f0f0e0] text-[11px] font-semibold text-[#8c8c7a] uppercase">
                           <th className="py-2 px-3">Имя файла</th>
@@ -741,7 +755,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                             <td className="py-3 px-3 font-mono text-[#8c8c7a]">{formatBytes(f.size)}</td>
                             <td className="py-3 px-3">
                               <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${f.status === 'ready' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                                {f.status}
+                                {formatStatus(f.status)}
                               </span>
                             </td>
                             <td className="py-3 px-3 text-right space-x-1.5">
@@ -777,13 +791,13 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                   ) : (
                     <div className="space-y-2">
                       {activeUploads.map((up) => (
-                        <div key={up.id} className="bg-[#fcfcf9] p-3 rounded-xl border border-[#e2e2d5] flex justify-between items-center text-xs">
-                          <div>
-                            <div className="font-semibold">{up.original_name}</div>
+                        <div key={up.id} className="bg-[#fcfcf9] p-3 rounded-xl border border-[#e2e2d5] flex flex-col min-[420px]:flex-row justify-between items-start min-[420px]:items-center gap-2 text-xs">
+                          <div className="min-w-0">
+                            <div className="font-semibold break-all">{up.original_name}</div>
                             <div className="text-[10px] text-[#8c8c7a] font-mono">{formatBytes(up.received_bytes)} / {formatBytes(up.declared_size)}</div>
                           </div>
                           <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold text-[10px]">
-                            {up.status}
+                            {formatStatus(up.status)}
                           </span>
                         </div>
                       ))}
@@ -815,7 +829,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                           )}
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                           <a
                             href={`/api/files/download/${f.id}?token=${adminToken}`}
                             download={f.original_name}
@@ -858,8 +872,8 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                         {formatBytes(stats?.traffic?.external_total_bytes || 0)}
                       </div>
                       <div className="text-[11px] text-[#8c8c7a] space-y-1 font-mono pt-1">
-                        <div>Загружено (Upload): <strong>{formatBytes(stats?.traffic?.external_upload_bytes || 0)}</strong></div>
-                        <div>Скачано (Download): <strong>{formatBytes(stats?.traffic?.external_download_bytes || 0)}</strong></div>
+                        <div>Загружено: <strong>{formatBytes(stats?.traffic?.external_upload_bytes || 0)}</strong></div>
+                        <div>Скачано: <strong>{formatBytes(stats?.traffic?.external_download_bytes || 0)}</strong></div>
                       </div>
                       <span className="text-[10px] text-amber-800 bg-amber-50 px-2 py-0.5 rounded block">
                         Учитывается в месячной квоте
@@ -872,8 +886,8 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                         {formatBytes(stats?.traffic?.local_total_bytes || 0)}
                       </div>
                       <div className="text-[11px] text-[#8c8c7a] space-y-1 font-mono pt-1">
-                        <div>Загружено (Upload): <strong>{formatBytes(stats?.traffic?.local_upload_bytes || 0)}</strong></div>
-                        <div>Скачано (Download): <strong>{formatBytes(stats?.traffic?.local_download_bytes || 0)}</strong></div>
+                        <div>Загружено: <strong>{formatBytes(stats?.traffic?.local_upload_bytes || 0)}</strong></div>
+                        <div>Скачано: <strong>{formatBytes(stats?.traffic?.local_download_bytes || 0)}</strong></div>
                       </div>
                       <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded block">
                         Без лимитов (не сносят квоту)
@@ -902,7 +916,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                 <div className="space-y-6">
                   <h2 className="font-serif text-xl font-bold text-[#1a1a15]">Журнал событий аудита</h2>
                   <div className="overflow-x-auto max-h-[450px] overflow-y-auto">
-                    <table className="w-full text-left border-collapse">
+                    <table className="w-full min-w-[640px] text-left border-collapse">
                       <thead>
                         <tr className="border-b border-[#f0f0e0] text-[11px] font-semibold text-[#8c8c7a] uppercase">
                           <th className="py-2 px-3">Время</th>
@@ -933,9 +947,9 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                   {settingsData ? (
                     <div className="bg-[#fcfcf9] p-4 rounded-2xl border border-[#e2e2d5] space-y-3 text-xs">
                       <div>Срок хранения по умолчанию: <strong>{settingsData.storage_defaults?.default_expiry} дней</strong></div>
-                      <div>Лимит диска: <strong>{settingsData.storage_defaults?.quota_gb} GB</strong></div>
-                      <div>Лимит скорости скачивания: <strong>{settingsData.speed_limits?.download_mbps} Mbps</strong></div>
-                      <div>Минимальный свободный диск: <strong>{settingsData.disk_reserve?.min_free_gb} GB</strong></div>
+                      <div>Лимит диска: <strong>{settingsData.storage_defaults?.quota_gb} ГБ</strong></div>
+                      <div>Лимит скорости скачивания: <strong>{settingsData.speed_limits?.download_mbps} Мбит/с</strong></div>
+                      <div>Минимальный свободный диск: <strong>{settingsData.disk_reserve?.min_free_gb} ГБ</strong></div>
                     </div>
                   ) : (
                     <p className="text-xs text-[#8c8c7a]">Загрузка настроек...</p>
@@ -950,7 +964,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
       {/* MODAL 1: GENERATE INVITE FOR A SPECIFIC PERSON */}
       {selectedPersonForInvite && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-xl relative border border-[#e2e2d5] space-y-4">
+          <div className="bg-white rounded-3xl max-w-md w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-4 sm:p-6 shadow-xl relative border border-[#e2e2d5] space-y-4">
             <button
               onClick={() => setSelectedPersonForInvite(null)}
               className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
@@ -1015,7 +1029,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
       {/* MODAL 2: EDIT PERSON QUOTAS & LIMITS */}
       {editingPerson && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-xl relative border border-[#e2e2d5] space-y-4">
+          <div className="bg-white rounded-3xl max-w-md w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-4 sm:p-6 shadow-xl relative border border-[#e2e2d5] space-y-4">
             <button
               onClick={() => setEditingPerson(null)}
               className="absolute top-4 right-4 p-1 rounded-full text-[#8c8c7a] hover:bg-[#f0f0e0] transition-colors cursor-pointer"
@@ -1030,7 +1044,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
 
             <div className="space-y-3 pt-1">
               <div>
-                <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1">Имя пользователя (Label)</label>
+                <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-1">Имя пользователя</label>
                 <input
                   type="text"
                   value={editingPerson.label}
@@ -1049,7 +1063,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3 pt-2">
+              <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-3 pt-2">
                 <div>
                   <label className="block text-[10px] font-semibold text-[#8c8c7a] uppercase mb-1">Квота диска (ГБ)</label>
                   <input
@@ -1061,7 +1075,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#8c8c7a] uppercase mb-1">Upload limit (ГБ/мес)</label>
+                  <label className="block text-[10px] font-semibold text-[#8c8c7a] uppercase mb-1">Лимит загрузки (ГБ/мес)</label>
                   <input
                     type="number"
                     min="1"
@@ -1071,7 +1085,7 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#8c8c7a] uppercase mb-1">Download limit (ГБ/мес)</label>
+                  <label className="block text-[10px] font-semibold text-[#8c8c7a] uppercase mb-1">Лимит скачивания (ГБ/мес)</label>
                   <input
                     type="number"
                     min="1"
@@ -1091,6 +1105,10 @@ export default function AdminView({ onNavigateToUser, onLogout }: AdminViewProps
                   />
                 </div>
               </div>
+              <label className="flex items-center gap-2 text-xs font-semibold text-[#5A5A40]">
+                <input type="checkbox" checked={Boolean(editingPerson.allow_user_keep_forever)} onChange={(e) => setEditingPerson({ ...editingPerson, allow_user_keep_forever: e.target.checked })} />
+                Разрешить хранить файлы бессрочно
+              </label>
             </div>
 
             <div className="flex justify-end gap-2 pt-3">

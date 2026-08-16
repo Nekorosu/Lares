@@ -256,7 +256,7 @@ export default function App() {
       ) : (
         /* Invite Code Activation Screen for Unauthenticated Users */
         <div className="min-h-screen bg-[#f4f4ee] flex flex-col justify-between items-center p-4 md:p-6 text-[#1a1a15] font-sans">
-          <div className="w-full flex justify-between items-center max-w-4xl pt-2">
+          <div className="w-full flex flex-wrap justify-between items-center gap-3 max-w-4xl pt-2">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-[#5A5A40] text-white flex items-center justify-center font-serif text-xl font-bold shadow-sm">
                 L
@@ -290,7 +290,7 @@ export default function App() {
             <form onSubmit={handleInviteActivate} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-[#5A5A40] uppercase tracking-wider mb-2">
-                  Инвайт-код (Invite Code)
+                  Инвайт-код
                 </label>
                 <input
                   type="text"
@@ -330,7 +330,7 @@ export default function App() {
           </div>
 
           <div className="text-center text-[11px] text-[#8c8c7a] pb-2">
-            Lares Homeshare Secure File Storage • Доступ по персональным инвайтам
+            Lares Homeshare • Защищённое файловое хранилище • Доступ по персональным инвайтам
           </div>
         </div>
       )}
@@ -338,7 +338,7 @@ export default function App() {
       {/* Admin Login Modal */}
       {showLoginModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border border-[#e2e2d5] relative animate-in fade-in zoom-in duration-200">
+          <div className="bg-white rounded-3xl p-4 sm:p-6 md:p-8 max-w-md w-full max-h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl border border-[#e2e2d5] relative animate-in fade-in zoom-in duration-200">
             <button 
               onClick={() => {
                 setShowLoginModal(false);
