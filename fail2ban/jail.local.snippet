@@ -1,9 +1,11 @@
-# Snippet for /etc/fail2ban/jail.local
-[lares]
-enabled  = true
-port     = http,https
-filter   = lares
-logpath  = /var/log/lares/security.log
-maxretry = 5
-findtime = 900
-bantime  = 3600
+[homeshare]
+enabled = true
+filter = homeshare
+port = http,https
+logpath = /var/log/homeshare/security.log
+backend = polling
+findtime = 15m
+maxretry = 10
+bantime = 1h
+# Local brute force is still limited by the application's persistent locks.
+ignoreip = 127.0.0.1/8 ::1 192.168.32.0/24

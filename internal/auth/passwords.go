@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -27,6 +28,7 @@ var (
 )
 
 var commonPasswords = map[string]bool{
+	"password123456": true, "123456789012": true, "qwertyuiop123": true, "password1234": true, "1234567890123456": true,
 	"admin":         true,
 	"admin123":      true,
 	"password":      true,
@@ -37,10 +39,10 @@ var commonPasswords = map[string]bool{
 }
 
 func ValidatePassword(username, password string) error {
-	if len(password) < 12 {
+	if utf8.RuneCountInString(password) < 12 {
 		return ErrPasswordTooShort
 	}
-	if len(password) > 256 {
+	if utf8.RuneCountInString(password) > 256 {
 		return ErrPasswordTooLong
 	}
 	if strings.EqualFold(username, password) {
@@ -69,7 +71,7 @@ func HashPassword(password string) (string, error) {
 
 func VerifyPassword(password, encodedHash string) (bool, error) {
 	parts := strings.Split(encodedHash, "$")
-	if len(parts) < 6 {
+	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" {
 		return false, errors.New("invalid hash parts")
 	}
 
@@ -82,6 +84,9 @@ func VerifyPassword(password, encodedHash string) (bool, error) {
 		return false, fmt.Errorf("invalid hash params: %w", err)
 	}
 
+	if memory < 8192 || memory > 262144 || time < 1 || time > 10 || threads < 1 || threads > 16 {
+		return false, errors.New("invalid hash parameters")
+	}
 	salt, err := hex.DecodeString(parts[4])
 	if err != nil {
 		return false, fmt.Errorf("invalid salt hex: %w", err)
@@ -92,6 +97,9 @@ func VerifyPassword(password, encodedHash string) (bool, error) {
 		return false, fmt.Errorf("invalid hash hex: %w", err)
 	}
 
+	if len(salt) < 16 || len(expectedHash) != 32 {
+		return false, errors.New("invalid hash length")
+	}
 	calculatedHash := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(expectedHash)))
 
 	if subtle.ConstantTimeCompare(calculatedHash, expectedHash) == 1 {

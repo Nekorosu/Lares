@@ -2,205 +2,100 @@ package speedlimit
 
 import (
 	"context"
+	"golang.org/x/time/rate"
 	"io"
-	"sync"
 	"sync/atomic"
 	"time"
-
-	"golang.org/x/time/rate"
 )
 
 type SpeedLimiter struct {
-	mu sync.Mutex
-
-	uploadMbps   int
-	downloadMbps int
-	burstMB      int
-
-	uploadLimiter   *rate.Limiter
-	downloadLimiter *rate.Limiter
-
-	uploadBytesWindow   atomic.Int64
-	downloadBytesWindow atomic.Int64
-	currentUploadBps    atomic.Int64
-	currentDownloadBps  atomic.Int64
+	up, down           *rate.Limiter
+	upBytes, downBytes atomic.Int64
+	upRate, downRate   atomic.Int64
 }
 
-func NewSpeedLimiter(uploadMbps, downloadMbps, burstMB int) *SpeedLimiter {
-	sl := &SpeedLimiter{
-		uploadMbps:   uploadMbps,
-		downloadMbps: downloadMbps,
-		burstMB:      burstMB,
+func NewSpeedLimiter(up, down, burst int) *SpeedLimiter {
+	s := &SpeedLimiter{up: rate.NewLimiter(rate.Limit(up*1000000/8), burst<<20), down: rate.NewLimiter(rate.Limit(down*1000000/8), burst<<20)}
+	return s
+}
+func (s *SpeedLimiter) UpdateLimits(up, down, burst int) {
+	now := time.Now()
+	s.up.SetLimitAt(now, rate.Limit(up*1000000/8))
+	s.down.SetLimitAt(now, rate.Limit(down*1000000/8))
+	s.up.SetBurstAt(now, burst<<20)
+	s.down.SetBurstAt(now, burst<<20)
+}
+func (s *SpeedLimiter) Tick() {
+	s.upRate.Store(s.upBytes.Swap(0))
+	s.downRate.Store(s.downBytes.Swap(0))
+}
+func (s *SpeedLimiter) GetStats() (int64, int64) { return s.upRate.Load(), s.downRate.Load() }
+
+type reader struct {
+	ctx context.Context
+	r   io.Reader
+	l   *rate.Limiter
+	n   *atomic.Int64
+}
+
+func (r *reader) Read(p []byte) (int, error) {
+	if len(p) > 32768 {
+		p = p[:32768]
 	}
-	sl.rebuildLimiters()
-	go sl.statsLoop()
-	return sl
-}
-
-func (sl *SpeedLimiter) rebuildLimiters() {
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
-
-	upBytesPerSec := rate.Limit(int64(sl.uploadMbps) * 1_000_000 / 8)
-	downBytesPerSec := rate.Limit(int64(sl.downloadMbps) * 1_000_000 / 8)
-	burstBytes := sl.burstMB * 1024 * 1024
-
-	sl.uploadLimiter = rate.NewLimiter(upBytesPerSec, burstBytes)
-	sl.downloadLimiter = rate.NewLimiter(downBytesPerSec, burstBytes)
-}
-
-func (sl *SpeedLimiter) UpdateLimits(uploadMbps, downloadMbps, burstMB int) {
-	if uploadMbps < 10 {
-		uploadMbps = 10
-	} else if uploadMbps > 1000 {
-		uploadMbps = 1000
+	n, e := r.r.Read(p)
+	r.n.Add(int64(n))
+	if n > 0 {
+		if err := r.l.WaitN(r.ctx, n); err != nil {
+			return n, err
+		}
 	}
-	if downloadMbps < 10 {
-		downloadMbps = 10
-	} else if downloadMbps > 1000 {
-		downloadMbps = 1000
+	return n, e
+}
+
+type writer struct {
+	ctx context.Context
+	w   io.Writer
+	l   *rate.Limiter
+	n   *atomic.Int64
+}
+
+func (w *writer) Write(p []byte) (int, error) {
+	total := 0
+	for len(p) > 0 {
+		n := min(len(p), 32768)
+		if err := w.l.WaitN(w.ctx, n); err != nil {
+			return total, err
+		}
+		k, e := w.w.Write(p[:n])
+		w.n.Add(int64(k))
+		total += k
+		if e != nil {
+			return total, e
+		}
+		if k != n {
+			return total, io.ErrShortWrite
+		}
+		p = p[n:]
 	}
-	if burstMB < 1 {
-		burstMB = 1
-	} else if burstMB > 128 {
-		burstMB = 128
-	}
-
-	sl.uploadMbps = uploadMbps
-	sl.downloadMbps = downloadMbps
-	sl.burstMB = burstMB
-	sl.rebuildLimiters()
+	return total, nil
 }
-
-func (sl *SpeedLimiter) statsLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	for range ticker.C {
-		up := sl.uploadBytesWindow.Swap(0)
-		down := sl.downloadBytesWindow.Swap(0)
-		sl.currentUploadBps.Store(up)
-		sl.currentDownloadBps.Store(down)
-	}
-}
-
-func (sl *SpeedLimiter) GetStats() (uploadBps, downloadBps int64) {
-	return sl.currentUploadBps.Load(), sl.currentDownloadBps.Load()
-}
-
-type LimitedReader struct {
-	r          io.Reader
-	limiter    *rate.Limiter
-	isExternal bool
-	stat       *atomic.Int64
-	ctx        context.Context
-}
-
-func (sl *SpeedLimiter) NewReader(ctx context.Context, r io.Reader, isExternal bool, isUpload bool) io.Reader {
-	if !isExternal {
+func (s *SpeedLimiter) NewReader(ctx context.Context, r io.Reader, ext, upload bool) io.Reader {
+	if !ext {
 		return r
 	}
-	sl.mu.Lock()
-	lim := sl.uploadLimiter
-	if !isUpload {
-		lim = sl.downloadLimiter
+	l, n := s.up, &s.upBytes
+	if !upload {
+		l, n = s.down, &s.downBytes
 	}
-	sl.mu.Unlock()
-
-	var stat *atomic.Int64
-	if isUpload {
-		stat = &sl.uploadBytesWindow
-	} else {
-		stat = &sl.downloadBytesWindow
-	}
-
-	return &LimitedReader{
-		r:          r,
-		limiter:    lim,
-		isExternal: true,
-		stat:       stat,
-		ctx:        ctx,
-	}
+	return &reader{ctx, r, l, n}
 }
-
-func (lr *LimitedReader) Read(p []byte) (n int, err error) {
-	n, err = lr.r.Read(p)
-	if n > 0 && lr.isExternal && lr.limiter != nil {
-		if lr.stat != nil {
-			lr.stat.Add(int64(n))
-		}
-		// Wait for token in chunks if n > burst
-		chunkSize := 32 * 1024
-		for i := 0; i < n; i += chunkSize {
-			end := i + chunkSize
-			if end > n {
-				end = n
-			}
-			sz := end - i
-			if errWait := lr.limiter.WaitN(lr.ctx, sz); errWait != nil {
-				return n, errWait
-			}
-		}
-	}
-	return n, err
-}
-
-type LimitedWriter struct {
-	w          io.Writer
-	limiter    *rate.Limiter
-	isExternal bool
-	stat       *atomic.Int64
-	ctx        context.Context
-}
-
-func (sl *SpeedLimiter) NewWriter(ctx context.Context, w io.Writer, isExternal bool, isUpload bool) io.Writer {
-	if !isExternal {
+func (s *SpeedLimiter) NewWriter(ctx context.Context, w io.Writer, ext, upload bool) io.Writer {
+	if !ext {
 		return w
 	}
-	sl.mu.Lock()
-	lim := sl.uploadLimiter
-	if !isUpload {
-		lim = sl.downloadLimiter
+	l, n := s.down, &s.downBytes
+	if upload {
+		l, n = s.up, &s.upBytes
 	}
-	sl.mu.Unlock()
-
-	var stat *atomic.Int64
-	if isUpload {
-		stat = &sl.uploadBytesWindow
-	} else {
-		stat = &sl.downloadBytesWindow
-	}
-
-	return &LimitedWriter{
-		w:          w,
-		limiter:    lim,
-		isExternal: true,
-		stat:       stat,
-		ctx:        ctx,
-	}
-}
-
-func (lw *LimitedWriter) Write(p []byte) (n int, err error) {
-	if lw.isExternal && lw.limiter != nil {
-		chunkSize := 32 * 1024
-		for i := 0; i < len(p); i += chunkSize {
-			end := i + chunkSize
-			if end > len(p) {
-				end = len(p)
-			}
-			chunk := p[i:end]
-			if errWait := lw.limiter.WaitN(lw.ctx, len(chunk)); errWait != nil {
-				return n, errWait
-			}
-			written, errWrite := lw.w.Write(chunk)
-			n += written
-			if lw.stat != nil {
-				lw.stat.Add(int64(written))
-			}
-			if errWrite != nil {
-				return n, errWrite
-			}
-		}
-		return n, nil
-	}
-
-	return lw.w.Write(p)
+	return &writer{ctx, w, l, n}
 }

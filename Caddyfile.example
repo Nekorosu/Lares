@@ -1,12 +1,14 @@
-# External Domain (Let's Encrypt TLS)
+# Replace this hostname and LAN address before installing.
 files.example.duckdns.org {
+    tls {
+        ca https://acme-v02.api.letsencrypt.org/directory
+    }
     reverse_proxy 127.0.0.1:8090 {
         header_up X-Real-IP {http.request.remote.host}
         header_up X-Forwarded-Proto {scheme}
     }
 }
 
-# Local Network IP (Internal TLS)
 https://192.168.32.100 {
     tls internal
     reverse_proxy 127.0.0.1:8090 {

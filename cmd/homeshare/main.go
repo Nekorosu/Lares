@@ -1,209 +1,236 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
+	"github.com/skip2/go-qrcode"
+	"io"
 	"lares/internal/api"
+	"lares/internal/audit"
 	"lares/internal/auth"
 	"lares/internal/config"
 	"lares/internal/db"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
+	"unsafe"
 )
 
-
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "admin" {
-		handleAdminCLI(os.Args[2:])
-		return
+	if e := run(os.Args[1:]); e != nil {
+		log.Print(e)
+		os.Exit(1)
 	}
-
-	// Default: Run Server
-	cfg, err := config.LoadConfig("")
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+}
+func run(args []string) error {
+	if len(args) > 1 && args[0] == "config" && args[1] == "init" {
+		f := flag.NewFlagSet("config init", flag.ContinueOnError)
+		path := f.String("path", config.DefaultPath, "путь конфигурации")
+		if e := f.Parse(args[2:]); e != nil {
+			return e
+		}
+		if e := os.MkdirAll(filepath.Dir(*path), 0750); e != nil {
+			return e
+		}
+		if e := config.Initialize(*path); e != nil {
+			return e
+		}
+		fmt.Println("Конфигурация создана с постоянными секретами:", *path)
+		return nil
 	}
-
-	database, err := db.InitDB(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+	if (len(args) == 0 || args[0] == "serve") && os.Geteuid() == 0 {
+		return fmt.Errorf("сервер нельзя запускать от root; используйте пользователя homeshare")
+	}
+	cfg, e := config.LoadConfig("")
+	if e != nil {
+		return e
+	}
+	if len(args) > 0 && args[0] == "backup" {
+		dest := filepath.Join(cfg.BackupDir, "upgrade-"+time.Now().UTC().Format("20060102T150405.000000000")+".db")
+		if e := db.Backup(cfg.DBPath, dest); e != nil {
+			return e
+		}
+		fmt.Println("Резервная копия:", dest)
+		return nil
+	}
+	database, e := db.InitDB(cfg.DBPath)
+	if e != nil {
+		return e
 	}
 	defer database.Close()
-
-	server, err := api.NewServer(cfg, database)
-	if err != nil {
-		log.Fatalf("Failed to initialize API server: %v", err)
-	}
-
-	httpServer := &http.Server{
-		Addr:         cfg.Listen,
-		Handler:      server.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout: 60 * time.Minute, // Long timeout for large streaming uploads/downloads
-		IdleTimeout:  60 * time.Second,
-	}
-
-	go func() {
-		log.Printf("Starting Homeshare server on http://%s", cfg.Listen)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+	if len(args) > 0 && args[0] == "admin" {
+		if len(args) < 2 {
+			return fmt.Errorf("admin create|delete|reset-totp|unlock --username ИМЯ")
 		}
-	}()
-
-	// Graceful shutdown
+		f := flag.NewFlagSet("admin", flag.ContinueOnError)
+		username := f.String("username", "", "имя администратора")
+		if e = f.Parse(args[2:]); e != nil {
+			return e
+		}
+		if !regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`).MatchString(*username) {
+			return fmt.Errorf("имя: 1..64 латинских букв, цифр, _, . или -")
+		}
+		switch args[1] {
+		case "create":
+			fmt.Print("Пароль (12..256 символов): ")
+			password, e := readPassword()
+			fmt.Println()
+			if e != nil {
+				return e
+			}
+			if e = auth.ValidatePassword(*username, password); e != nil {
+				return e
+			}
+			hash, e := auth.HashPassword(password)
+			if e != nil {
+				return e
+			}
+			secret, e := auth.GenerateTOTPSecret()
+			if e != nil {
+				return e
+			}
+			if _, e = database.Exec("INSERT INTO admin_users(username,password_hash,totp_secret,totp_enabled,created_at) VALUES(?,?,?,1,?)", *username, hash, secret, time.Now().UTC()); e != nil {
+				return e
+			}
+			if e = audit.NewLogger(database, cfg.Secrets.IPHashSalt).Log("system", 0, "admin_"+args[1], "admin", *username, "", "Команда CLI выполнена"); e != nil {
+				return e
+			}
+			return showTOTP(*username, secret)
+		case "delete":
+			res, e := database.Exec("DELETE FROM admin_users WHERE username=?", *username)
+			if e != nil {
+				return e
+			}
+			n, _ := res.RowsAffected()
+			if n != 1 {
+				return fmt.Errorf("администратор не найден")
+			}
+			fmt.Println("Администратор и его сессии удалены")
+		case "reset-totp":
+			secret, e := auth.GenerateTOTPSecret()
+			if e != nil {
+				return e
+			}
+			tx, e := database.Begin()
+			if e != nil {
+				return e
+			}
+			defer tx.Rollback()
+			res, e := tx.Exec("UPDATE admin_users SET totp_secret=?,totp_enabled=1,last_totp_step=0 WHERE username=?", secret, *username)
+			if e != nil {
+				return e
+			}
+			n, _ := res.RowsAffected()
+			if n != 1 {
+				return fmt.Errorf("администратор не найден")
+			}
+			if _, e = tx.Exec("DELETE FROM device_sessions WHERE admin_id IN (SELECT id FROM admin_users WHERE username=?)", *username); e != nil {
+				return e
+			}
+			if e = tx.Commit(); e != nil {
+				return e
+			}
+			if e = audit.NewLogger(database, cfg.Secrets.IPHashSalt).Log("system", 0, "admin_"+args[1], "admin", *username, "", "Команда CLI выполнена"); e != nil {
+				return e
+			}
+			return showTOTP(*username, secret)
+		case "unlock":
+			prefix := "admin:" + *username + ":"
+			tx, e := database.Begin()
+			if e != nil {
+				return e
+			}
+			defer tx.Rollback()
+			for _, table := range []string{"rate_limit_locks", "request_events"} {
+				if _, e = tx.Exec("DELETE FROM "+table+" WHERE substr(key,1,?)=?", len(prefix), prefix); e != nil {
+					return e
+				}
+			}
+			if e = tx.Commit(); e != nil {
+				return e
+			}
+			fmt.Println("Блокировки и счётчики попыток сброшены")
+		default:
+			return fmt.Errorf("неизвестная команда admin")
+		}
+		return audit.NewLogger(database, cfg.Secrets.IPHashSalt).Log("system", 0, "admin_"+args[1], "admin", *username, "", "Команда CLI выполнена")
+	}
+	if len(args) > 0 && args[0] != "serve" {
+		return fmt.Errorf("команды: serve, config init, admin create|delete|reset-totp|unlock")
+	}
+	if os.Geteuid() == 0 {
+		return fmt.Errorf("сервер нельзя запускать от root; используйте пользователя homeshare")
+	}
+	lock, e := os.OpenFile(filepath.Join(filepath.Dir(cfg.DBPath), "serve.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
+	if e = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+		return fmt.Errorf("экземпляр сервера уже работает")
+	}
+	server, e := api.NewServer(cfg, database)
+	if e != nil {
+		return e
+	}
+	defer server.Close()
+	hs := &http.Server{Addr: cfg.Listen, Handler: server.Routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 64 << 10}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.ListenAndServe() }()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
-
-	log.Println("Shutting down Homeshare server gracefully...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := httpServer.Shutdown(ctx); err != nil {
-		log.Printf("Error during shutdown: %v", err)
+	defer signal.Stop(stop)
+	select {
+	case e = <-errCh:
+		if e != http.ErrServerClosed {
+			return e
+		}
+	case <-stop:
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if e = hs.Shutdown(ctx); e != nil {
+			hs.Close()
+			return e
+		}
 	}
-	log.Println("Server stopped successfully.")
+	return nil
 }
-
-func handleAdminCLI(args []string) {
-	if len(args) == 0 {
-		printCLIUsage()
-		return
+func readPassword() (string, error) {
+	fd := os.Stdin.Fd()
+	var old syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(&old)))
+	if errno == 0 {
+		next := old
+		next.Lflag &^= syscall.ECHO
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCSETS, uintptr(unsafe.Pointer(&next)))
+		if errno != 0 {
+			return "", errno
+		}
+		defer syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCSETS, uintptr(unsafe.Pointer(&old)))
 	}
-
-	cfg, err := config.LoadConfig("")
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+	line, e := bufio.NewReader(io.LimitReader(os.Stdin, 4097)).ReadString('\n')
+	if e != nil {
+		return "", e
 	}
-
-	database, err := db.InitDB(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	defer database.Close()
-
-	subcommand := args[0]
-	subArgs := args[1:]
-
-	switch subcommand {
-	case "create":
-		createCmd := flag.NewFlagSet("create", flag.ExitOnError)
-		username := createCmd.String("username", "admin", "Admin username")
-		password := createCmd.String("password", "", "Admin password")
-		_ = createCmd.Parse(subArgs)
-
-		if *password == "" {
-			fmt.Print("Enter admin password (min 12 chars): ")
-			fmt.Scanln(password)
-		}
-
-		if err := auth.ValidatePassword(*username, *password); err != nil {
-			log.Fatalf("Password validation error: %v", err)
-		}
-
-		passHash, err := auth.HashPassword(*password)
-		if err != nil {
-			log.Fatalf("Failed to hash password: %v", err)
-		}
-
-		totpSecret, err := auth.GenerateTOTPSecret()
-		if err != nil {
-			log.Fatalf("Failed to generate TOTP secret: %v", err)
-		}
-
-		_, err = database.Exec(`
-			INSERT INTO admin_users (username, password_hash, totp_secret, totp_enabled, created_at)
-			VALUES (?, ?, ?, 1, ?)
-		`, *username, passHash, totpSecret, time.Now().UTC())
-
-		if err != nil {
-			log.Fatalf("Failed to create admin user: %v", err)
-		}
-
-		fmt.Printf("\n[SUCCESS] Admin user '%s' created successfully!\n", *username)
-		fmt.Printf("TOTP Secret: %s\n", totpSecret)
-
-	case "delete":
-		deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
-		username := deleteCmd.String("username", "", "Admin username to delete")
-		_ = deleteCmd.Parse(subArgs)
-
-		if *username == "" {
-			log.Fatal("Error: --username is required")
-		}
-
-		res, err := database.Exec("DELETE FROM admin_users WHERE username = ?", *username)
-		if err != nil {
-			log.Fatalf("Failed to delete admin: %v", err)
-		}
-
-		rows, _ := res.RowsAffected()
-		if rows == 0 {
-			fmt.Printf("Admin user '%s' not found.\n", *username)
-		} else {
-			fmt.Printf("Admin user '%s' deleted successfully.\n", *username)
-		}
-
-	case "reset-totp":
-		resetCmd := flag.NewFlagSet("reset-totp", flag.ExitOnError)
-		username := resetCmd.String("username", "", "Admin username")
-		_ = resetCmd.Parse(subArgs)
-
-		if *username == "" {
-			log.Fatal("Error: --username is required")
-		}
-
-		newSecret, err := auth.GenerateTOTPSecret()
-		if err != nil {
-			log.Fatalf("Failed to generate TOTP secret: %v", err)
-		}
-
-		res, err := database.Exec("UPDATE admin_users SET totp_secret = ?, totp_enabled = 1 WHERE username = ?", newSecret, *username)
-		if err != nil {
-			log.Fatalf("Failed to reset TOTP: %v", err)
-		}
-
-		rows, _ := res.RowsAffected()
-		if rows == 0 {
-			fmt.Printf("Admin user '%s' not found.\n", *username)
-		} else {
-			fmt.Printf("\n[SUCCESS] TOTP reset for admin '%s'\n", *username)
-			fmt.Printf("New TOTP Secret: %s\n", newSecret)
-		}
-
-	case "unlock":
-		unlockCmd := flag.NewFlagSet("unlock", flag.ExitOnError)
-		username := unlockCmd.String("username", "", "Admin username")
-		_ = unlockCmd.Parse(subArgs)
-
-		if *username == "" {
-			log.Fatal("Error: --username is required")
-		}
-
-		prefix := fmt.Sprintf("admin_lock_%s_", *username)
-		_, err = database.Exec("DELETE FROM rate_limit_locks WHERE key LIKE ?", prefix+"%")
-		if err != nil {
-			log.Fatalf("Failed to unlock admin: %v", err)
-		}
-
-		fmt.Printf("Admin user '%s' unlocked successfully.\n", *username)
-
-	default:
-		printCLIUsage()
-	}
+	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
 }
-
-func printCLIUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  homeshare serve                           Start the web server")
-	fmt.Println("  homeshare admin create [--username admin] [--password pass]")
-	fmt.Println("  homeshare admin delete --username admin")
-	fmt.Println("  homeshare admin reset-totp --username admin")
-	fmt.Println("  homeshare admin unlock --username admin")
+func showTOTP(username, secret string) error {
+	uri := "otpauth://totp/Lares:" + url.PathEscape(username) + "?secret=" + secret + "&issuer=Lares"
+	qr, e := qrcode.New(uri, qrcode.Medium)
+	if e != nil {
+		return e
+	}
+	fmt.Println("Добавьте TOTP в приложение-аутентификатор. Секрет показывается только сейчас:")
+	fmt.Println(secret)
+	fmt.Println(qr.ToSmallString(false))
+	return nil
 }

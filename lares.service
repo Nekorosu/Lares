@@ -1,24 +1,35 @@
 [Unit]
-Description=Lares Homeshare Secure File Sharing Service
+Description=Lares secure file sharing
 After=network.target
+RequiresMountsFor=/srv/media/fileshare /home/fileshare-backup
 
 [Service]
 Type=simple
 User=homeshare
 Group=homeshare
+Environment=LARES_CONFIG=/etc/homeshare/config.yaml
 ExecStart=/usr/local/bin/homeshare serve
 WorkingDirectory=/var/lib/homeshare
+StateDirectory=homeshare
+StateDirectoryMode=0750
+LogsDirectory=homeshare
+LogsDirectoryMode=0750
+UMask=0027
 Restart=on-failure
 RestartSec=5s
-
-# Hardening & Security
+TimeoutStopSec=30s
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
-ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/homeshare /etc/homeshare /tmp /var/tmp
-
-# Limits
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/srv/media/fileshare /home/fileshare-backup /var/log/homeshare
 LimitNOFILE=65536
 
 [Install]

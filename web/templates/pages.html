@@ -1,0 +1,633 @@
+{{define "head"}}<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="csrf-token" content="{{.CSRF}}">
+<title>Lares — защищённый файлообменник</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/upload.js" defer>
+</script>
+</head>
+<body>
+<header>
+<a class="brand" href="/">Lares</a>
+<nav>{{if .Admin}}<a href="/admin/dashboard">Обзор</a>
+<a href="/admin/people">Пользователи</a>
+<a href="/admin/invites">Инвайты</a>
+<a href="/admin/sessions">Сессии</a>
+<a href="/admin/files">Файлы</a>
+<a href="/admin/uploads">Загрузки</a>
+<a href="/admin/quarantine">Карантин</a>
+<a href="/admin/traffic">Трафик</a>
+<a href="/admin/audit">Журнал</a>
+<a href="/admin/settings">Настройки</a>{{else if .Person}}<a href="/">Файлы</a>
+<a href="/devices">Мои устройства</a>{{end}}</nav>{{if or .Admin .Person}}<form action="/logout" method="post">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<button>Выйти</button>
+</form>{{end}}</header>
+<main>{{end}}
+{{define "foot"}}</main>
+<footer>Lares · файлы хранятся на вашем сервере</footer>
+</body>
+</html>{{end}}
+{{define "pages"}}<nav class="pagination">{{if gt .PageNumber 1}}<a href="{{.Previous}}">← Назад</a>{{end}}<span>Страница {{.PageNumber}}</span>
+<a href="{{.Next}}">Далее →</a>
+</nav>{{end}}
+
+{{define "login"}}{{template "head" .}}<section class="card narrow">
+<h1>Войти по приглашению</h1>
+<form method="post" action="/login">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Код приглашения<input type="text" name="invite_code" value="" required autocomplete="off" maxlength="32">
+</label>
+<label>Название устройства<input type="text" name="device_name" value="Мой браузер" maxlength="80">
+</label>
+<button>Войти</button>
+</form>
+<a href="/admin/login">Вход администратора</a>
+</section>{{template "foot" .}}{{end}}
+{{define "admin_login"}}{{template "head" .}}<section class="card narrow">
+<h1>Вход администратора</h1>
+<form method="post" action="/admin/login">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Имя пользователя<input type="text" name="username" value="" required autocomplete="username" maxlength="128">
+</label>
+<label>Пароль<input type="password" name="password" value="" required autocomplete="current-password">
+</label>
+<label>Код TOTP<input type="text" name="totp_code" value="" required inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code">
+</label>
+<button>Войти</button>
+</form>
+</section>{{template "foot" .}}{{end}}
+{{define "home"}}{{template "head" .}}<h1>Файлы</h1>
+<div class="grid">
+<section class="card">
+<h2>Хранилище</h2>
+<p>{{bytes .Stats.used}} из {{bytes .Stats.quota}}</p>
+<small>В том числе зарезервировано {{bytes .Stats.reserved}}</small>
+</section>
+<section class="card">
+<h2>Загружено за месяц</h2>
+<p>{{bytes .Stats.upload}} из {{bytes .Stats.upload_limit}}</p>
+</section>
+<section class="card">
+<h2>Скачано за месяц</h2>
+<p>{{bytes .Stats.download}} из {{bytes .Stats.download_limit}}</p>
+</section>
+</div>{{if .Stats.ignore}}<p>Администратор отключил месячные ограничения трафика.</p>{{end}}<section class="card">
+<h2>Загрузить</h2>
+<label>Срок хранения<select id="expiry">{{range .Config.ExpiryOptions}}<option value="{{.}}" {{if eq . $.Config.StorageDefaults.DefaultExpiryDays}}selected{{end}}>{{.}} дней</option>{{end}}{{if .Person.AllowUserKeepForever}}<option value="0">Бессрочно</option>{{end}}</select>
+</label>
+<div id="dropzone" tabindex="0" role="button">Перетащите файлы сюда или выберите их<input id="file-input" type="file" multiple>
+</div>
+<p>Максимальный файл: {{bytes .Person.MaxFileSizeBytes}}</p>
+<div id="transfers" data-person-id="{{.Person.ID}}" aria-live="polite">
+</div>
+</section>
+<section class="card">
+<h2>Общее хранилище</h2>
+<form class="filters" method="get">
+<label>Поиск<input name="q" value="{{.Q}}">
+</label>
+<label>Порядок<select name="sort">
+<option value="date">Дата</option>
+<option value="name" {{if eq .Sort "name"}}selected{{end}}>Имя</option>
+<option value="size" {{if eq .Sort "size"}}selected{{end}}>Размер</option>
+</select>
+</label>
+<label>Направление<select name="direction">
+<option value="desc">По убыванию</option>
+<option value="asc" {{if eq .Direction "asc"}}selected{{end}}>По возрастанию</option>
+</select>
+</label>
+<label>На странице<input type="number" name="limit" min="1" max="200" value="{{.Limit}}">
+</label>
+<label>Статус<select name="status">
+<option value="">Все</option>
+<option value="ready" {{if eq .Status "ready"}}selected{{end}}>Готовые</option>
+<option value="quarantined" {{if eq .Status "quarantined"}}selected{{end}}>На проверке</option>
+<option value="flagged" {{if eq .Status "flagged"}}selected{{end}}>С флагом</option>
+<option value="protected" {{if eq .Status "protected"}}selected{{end}}>Защищённые</option>
+</select>
+</label>
+<button>Показать</button>
+</form>
+<button id="zip-download" type="button">Скачать выбранные файлы ZIP</button>
+<div class="table-scroll">
+<table>
+<thead>
+<tr>
+<th>Выбрать</th>
+<th>Файл</th>
+<th>Загрузил</th>
+<th>Размер</th>
+<th>Дата</th>
+<th>Хранение</th>
+<th>Действия</th>
+</tr>
+</thead>
+<tbody>{{range .Files}}<tr>
+<td>{{if eq .status "ready"}}<input class="zip-check" type="checkbox" value="{{.id}}" aria-label="Выбрать {{.original_name}}">{{end}}</td>
+<td>{{.original_name}}{{if eq .status "quarantined"}}<span class="badge">Ожидает проверки</span>{{end}}</td>
+<td>{{.uploader_name}}</td>
+<td>{{bytes .size}}</td>
+<td>{{date .created_at}}</td>
+<td>{{if .keep_forever}}Бессрочно{{else}}{{date .expires_at}}{{end}}{{if .protected}} · защищён{{end}}</td>
+<td>
+<a href="/download/{{.id}}">Скачать</a>{{if .preview}} <a href="/preview/{{.id}}" target="_blank" rel="noreferrer">Просмотр</a>{{end}}{{if .can_delete}}<form method="post" action="/files/delete/{{.id}}" data-confirm="Удалить файл безвозвратно?">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<button class="danger">Удалить</button>
+</form>{{end}}</td>
+</tr>{{else}}<tr>
+<td colspan="7">Файлов пока нет</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{template "pages" .}}</section>{{template "foot" .}}{{end}}
+{{define "devices"}}{{template "head" .}}<h1>Мои устройства</h1>
+<form action="/devices/revoke" method="post" data-confirm="Выйти со всех устройств?">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<input type="hidden" name="all" value="1">
+<button class="danger">Выйти везде</button>
+</form>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Устройство</th>
+<th>Последнее обращение</th>
+<th>Истекает при бездействии</th>
+<th>Предельный срок</th>
+<th>
+</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.name}}</td>
+<td>{{date .last_used_at}}</td>
+<td>{{date .idle_expires_at}}</td>
+<td>{{date .absolute_expires_at}}</td>
+<td>{{if not .revoked}}<form method="post" action="/devices/revoke">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<button>Выйти</button>
+</form>{{else}}Отозвано{{end}}</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}
+{{define "admin_dashboard"}}{{template "head" .}}<h1>Обзор</h1>
+<div class="grid">
+<section class="card">
+<h2>Диск</h2>
+<p>Свободно {{bytes .Free}} из {{bytes .Total}}</p>
+<p>Файлы: {{bytes .Used}}</p>
+<p>Свободные inode: {{.Inodes}}</p>
+</section>
+<section class="card">
+<h2>Внешние передачи</h2>
+<p>Приём: {{bytes .UpSpeed}}/с</p>
+<p>Отдача: {{bytes .DownSpeed}}/с</p>
+<p>Загрузок: {{.Uploads}} · скачиваний: {{.Downloads}}</p>
+</section>
+<section class="card">
+<h2>Доступ</h2>
+<p>Активных сессий: {{.Sessions}}</p>
+<p>В карантине: {{.Quarantine}}</p>
+</section>
+</div>
+<h2>Последние события</h2>{{template "audit_table" .}}{{template "foot" .}}{{end}}
+{{define "admin_people"}}{{template "head" .}}<h1>Пользователи</h1>
+<section class="card">
+<h2>{{if .Edit}}Редактировать пользователя{{else}}Создать пользователя{{end}}</h2>
+<form method="post" action="/admin/action/person_save" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{if .Edit}}{{.Edit.ID}}{{end}}">
+<div class="grid">
+<label>Имя<input type="text" name="label" value="{{if .Edit}}{{.Edit.Label}}{{end}}" required maxlength="100">
+</label>
+<label>Заметки<input type="text" name="notes" value="{{if .Edit}}{{.Edit.Notes}}{{end}}" maxlength="4096">
+</label>
+<label>Хранилище, ГиБ<input type="number" name="storage_quota_gb" value="{{if .Edit}}{{gib .Edit.StorageQuotaBytes}}{{else}}{{gib .Config.StorageDefaults.QuotaBytes}}{{end}}" min="0" step="any" required>
+</label>
+<label>Загрузка в месяц, ГиБ<input type="number" name="monthly_upload_gb" value="{{if .Edit}}{{gib .Edit.MonthlyUploadLimitBytes}}{{else}}{{gib .Config.StorageDefaults.MonthlyUploadLimit}}{{end}}" min="0" step="any" required>
+</label>
+<label>Скачивание в месяц, ГиБ<input type="number" name="monthly_download_gb" value="{{if .Edit}}{{gib .Edit.MonthlyDownloadLimit}}{{else}}{{gib .Config.StorageDefaults.MonthlyDownloadLimit}}{{end}}" min="0" step="any" required>
+</label>
+<label>Размер файла, ГиБ<input type="number" name="max_file_size_gb" value="{{if .Edit}}{{gib .Edit.MaxFileSizeBytes}}{{else}}{{gib .Config.StorageDefaults.MaxFileSize}}{{end}}" min="0" step="any" required>
+</label>
+<label>Одновременные загрузки<input type="number" name="max_concurrent_uploads" value="{{if .Edit}}{{.Edit.MaxConcurrentUploads}}{{else}}{{.Config.StorageDefaults.MaxConcurrentUploads}}{{end}}" min="1" max="100" required>
+</label>
+<label>Бездействие, дней<input type="number" name="session_idle_days" value="{{if .Edit}}{{.Edit.SessionIdleDays}}{{else}}{{.Config.SessionDefaults.UserIdleDays}}{{end}}" min="1" max="3650" required>
+</label>
+<label>Предельный срок сессии, дней<input type="number" name="session_absolute_days" value="{{if .Edit}}{{.Edit.SessionAbsoluteDays}}{{else}}{{.Config.SessionDefaults.UserAbsoluteDays}}{{end}}" min="0" max="3650" required>
+</label>
+</div>
+<p class="notice">0 в предельном сроке — сессия без ограничения по возрасту. Устройство остаётся доверенным до отзыва или истечения срока бездействия.</p>
+<label class="check">
+<input type="checkbox" name="allow_user_keep_forever" {{if .Edit}}{{if .Edit.AllowUserKeepForever}}checked{{end}}{{else}}{{if .Config.StorageDefaults.AllowUserKeepForever}}checked{{end}}{{end}}>Разрешить бессрочное хранение</label>
+<label class="check">
+<input type="checkbox" name="ignore_traffic_quota" {{if .Edit}}{{if .Edit.IgnoreTrafficQuota}}checked{{end}}{{end}}>Не ограничивать месячный трафик</label>
+<p>Нулевая квота запрещает новые передачи; отключение лимита задаётся отдельным флагом.</p>
+<button>Сохранить</button>
+</form>
+</section>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Пользователь</th>
+<th>Квоты</th>
+<th>Действия</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.label}}<p>{{.notes}}</p>{{if .enabled}}Активен{{else}}Отключён{{end}}</td>
+<td>Хранилище {{bytes .storage_quota_bytes}}<br>Загрузка {{bytes .monthly_upload_limit_bytes}}<br>Скачивание {{bytes .monthly_download_limit_bytes}}</td>
+<td>
+<a href="?edit={{.id}}">Редактировать</a>
+<a href="/admin/invites">Пригласить</a>
+<form method="post" action="/admin/action/person_disable" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<button>Отключить</button>
+</form>
+<form method="post" action="/admin/action/person_enable" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<button>Включить</button>
+</form>
+<form method="post" action="/admin/action/person_delete" data-confirm="Удалить пользователя? Файлы удалятся только при выбранном флаге.">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<label class="check">
+<input type="checkbox" name="delete_files">Также удалить файлы</label>
+<small>По умолчанию файлы останутся.</small>
+<button class="danger">Удалить пользователя</button>
+</form>
+</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}
+{{define "admin_invites"}}{{template "head" .}}<h1>Инвайты</h1>
+<section class="card">
+<form method="post" action="/admin/action/invite_create" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<label>Пользователь<select name="person_id" required>{{range .People}}<option value="{{.id}}">{{.label}}</option>{{end}}</select>
+</label>
+<label>Активаций<input type="number" name="max_activations" value="1" min="1" max="10000" required>
+</label>
+<label>Действует, часов<input type="number" name="expires_hours" value="24" min="1" max="8760" required>
+</label>
+<button>Создать инвайт</button>
+</form>
+</section>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Пользователь</th>
+<th>Префикс</th>
+<th>Активации</th>
+<th>Истекает</th>
+<th>
+</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.label}}</td>
+<td>{{.code_prefix}}</td>
+<td>{{.activations_used}} / {{.max_activations}}{{if not .enabled}} · отключён{{end}}</td>
+<td>{{date .expires_at}}</td>
+<td>
+<form method="post" action="/admin/action/invite_revoke" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<button>Отозвать</button>
+</form>
+</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}
+{{define "invite_created"}}{{template "head" .}}<section class="card narrow">
+<h1>Инвайт для {{.Label}}</h1>
+<p>Сохраните код: он показывается только сейчас.</p>
+<p class="code">{{.Code}}</p>
+<img src="{{.QR}}" alt="QR-код приглашения" width="256" height="256">
+<p>
+<a href="/admin/invites">Готово</a>
+</p>
+</section>{{template "foot" .}}{{end}}
+{{define "admin_sessions"}}{{template "head" .}}<h1>Сессии</h1>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Пользователь / устройство</th>
+<th>Обращение</th>
+<th>Хэш IP</th>
+<th>Бездействие / предельный срок</th>
+<th>
+</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.label}} · {{.name}}</td>
+<td>{{date .last_used_at}}</td>
+<td class="hash">{{.last_ip_hash}}</td>
+<td>{{date .idle_expires_at}} / {{date .absolute_expires_at}}</td>
+<td>
+<form method="post" action="/admin/action/session_revoke" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<button>Отозвать</button>
+</form>{{if .person_id}}<form method="post" action="/admin/action/session_revoke_all" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.person_id}}">
+<button>Отозвать все устройства</button>
+</form>{{end}}</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}
+{{define "admin_files"}}{{template "head" .}}<h1>Файлы</h1>
+<form class="filters" method="get">
+<label>Поиск<input name="q" value="{{.Q}}">
+</label>
+<label>Порядок<select name="sort">
+<option value="date">Дата</option>
+<option value="name" {{if eq .Sort "name"}}selected{{end}}>Имя</option>
+<option value="size" {{if eq .Sort "size"}}selected{{end}}>Размер</option>
+</select>
+</label>
+<label>Направление<select name="direction">
+<option value="desc">По убыванию</option>
+<option value="asc" {{if eq .Direction "asc"}}selected{{end}}>По возрастанию</option>
+</select>
+</label>
+<label>На странице<input type="number" name="limit" min="1" max="200" value="{{.Limit}}">
+</label>
+<label>Статус<select name="status">
+<option value="">Все</option>
+<option value="ready" {{if eq .Status "ready"}}selected{{end}}>Готовые</option>
+<option value="quarantined" {{if eq .Status "quarantined"}}selected{{end}}>На проверке</option>
+<option value="flagged" {{if eq .Status "flagged"}}selected{{end}}>С флагом</option>
+<option value="protected" {{if eq .Status "protected"}}selected{{end}}>Защищённые</option>
+</select>
+</label>
+<button>Показать</button>
+</form>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Файл</th>
+<th>Владелец</th>
+<th>Размер / дата</th>
+<th>Статус</th>
+<th>Хранение</th>
+<th>Действия</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.original_name}}<p>
+<a href="/download/{{.id}}">Скачать</a>
+</p>
+</td>
+<td>{{.uploader_name}}</td>
+<td>{{bytes .size}}<br>{{date .created_at}}</td>
+<td>{{if eq .status "quarantined"}}На проверке{{else}}Готов{{end}}<p>{{.flag_reason}}</p>
+</td>
+<td>
+<form method="post" action="/admin/action/file_save" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<label class="check">
+<input type="checkbox" name="protected" {{if .protected}}checked{{end}}>Защитить от удаления пользователем</label>
+<label class="check">
+<input type="checkbox" name="keep_forever" {{if .keep_forever}}checked{{end}}>Бессрочно</label>
+<label>Новый срок, дней (пусто — сохранить)<input type="number" name="expiry_days" value="" min="1" max="3650">
+</label>
+<small>Истекает {{date .expires_at}}</small>
+<button>Сохранить</button>
+</form>
+</td>
+<td>{{if eq .status "quarantined"}}<form method="post" action="/admin/action/file_approve" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<button>Одобрить</button>
+</form>{{end}}{{if .flagged}}<form method="post" action="/admin/action/file_unflag" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<button>Снять флаг</button>
+</form>{{end}}<form method="post" action="/admin/action/file_delete" data-confirm="Удалить файл безвозвратно?">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<button class="danger">Удалить</button>
+</form>
+</td>
+</tr>{{end}}</table>
+</div>{{template "pages" .}}{{template "foot" .}}{{end}}
+{{define "admin_quarantine"}}{{template "head" .}}<h1>Карантин</h1>
+<form class="filters" method="get">
+<label>Поиск<input name="q" value="{{.Q}}">
+</label>
+<label>Порядок<select name="sort">
+<option value="date">Дата</option>
+<option value="name" {{if eq .Sort "name"}}selected{{end}}>Имя</option>
+<option value="size" {{if eq .Sort "size"}}selected{{end}}>Размер</option>
+</select>
+</label>
+<label>Направление<select name="direction">
+<option value="desc">По убыванию</option>
+<option value="asc" {{if eq .Direction "asc"}}selected{{end}}>По возрастанию</option>
+</select>
+</label>
+<label>На странице<input type="number" name="limit" min="1" max="200" value="{{.Limit}}">
+</label>
+<label>Статус<select name="status">
+<option value="">Все</option>
+<option value="ready" {{if eq .Status "ready"}}selected{{end}}>Готовые</option>
+<option value="quarantined" {{if eq .Status "quarantined"}}selected{{end}}>На проверке</option>
+<option value="flagged" {{if eq .Status "flagged"}}selected{{end}}>С флагом</option>
+<option value="protected" {{if eq .Status "protected"}}selected{{end}}>Защищённые</option>
+</select>
+</label>
+<button>Показать</button>
+</form>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Файл</th>
+<th>Владелец</th>
+<th>Размер / дата</th>
+<th>Статус</th>
+<th>Хранение</th>
+<th>Действия</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.original_name}}<p>
+<a href="/download/{{.id}}">Скачать</a>
+</p>
+</td>
+<td>{{.uploader_name}}</td>
+<td>{{bytes .size}}<br>{{date .created_at}}</td>
+<td>{{if eq .status "quarantined"}}На проверке{{else}}Готов{{end}}<p>{{.flag_reason}}</p>
+</td>
+<td>
+<form method="post" action="/admin/action/file_save" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<label class="check">
+<input type="checkbox" name="protected" {{if .protected}}checked{{end}}>Защитить от удаления пользователем</label>
+<label class="check">
+<input type="checkbox" name="keep_forever" {{if .keep_forever}}checked{{end}}>Бессрочно</label>
+<label>Новый срок, дней (пусто — сохранить)<input type="number" name="expiry_days" value="" min="1" max="3650">
+</label>
+<small>Истекает {{date .expires_at}}</small>
+<button>Сохранить</button>
+</form>
+</td>
+<td>{{if eq .status "quarantined"}}<form method="post" action="/admin/action/file_approve" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<button>Одобрить</button>
+</form>{{end}}{{if .flagged}}<form method="post" action="/admin/action/file_unflag" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<button>Снять флаг</button>
+</form>{{end}}<form method="post" action="/admin/action/file_delete" data-confirm="Удалить файл безвозвратно?">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="file_id" value="{{.id}}">
+<button class="danger">Удалить</button>
+</form>
+</td>
+</tr>{{end}}</table>
+</div>{{template "pages" .}}{{template "foot" .}}{{end}}
+{{define "admin_uploads"}}{{template "head" .}}<h1>Активные загрузки</h1>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Пользователь</th>
+<th>Файл</th>
+<th>Принято / резерв</th>
+<th>Резерв до</th>
+<th>
+</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.label}}</td>
+<td>{{.original_name}}</td>
+<td>{{bytes .received_bytes}} / {{bytes .declared_size}}</td>
+<td>{{date .reservation_expires_at}}</td>
+<td>
+<form method="post" action="/admin/action/upload_cancel" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="upload_id" value="{{.id}}">
+<button>Отменить</button>
+</form>
+</td>
+</tr>{{else}}<tr>
+<td colspan="5">Нет активных загрузок</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}
+{{define "admin_traffic"}}{{template "head" .}}<h1>Трафик</h1>
+<form method="get">
+<label>Месяц<select name="month">{{range .Months}}<option {{if eq . $.Month}}selected{{end}}>{{.}}</option>{{end}}</select>
+</label>
+<button>Показать</button>
+</form>
+<p>Счётчики ниже учитывают только внешнюю сеть. Лимит применяется к завершённым байтам плюс прерванным сверх допустимого запаса (½ лимита для загрузки, полный лимит для скачивания).</p>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Пользователь</th>
+<th>Загрузка: завершено / прервано / лимит</th>
+<th>Скачивание: завершено / прервано / лимит</th>
+<th>Действия</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.label}}{{if .ignore_traffic_quota}} · без ограничения{{end}}</td>
+<td>{{bytes .up}} / {{bytes .up_aborted}} / {{bytes .monthly_upload_limit_bytes}}</td>
+<td>{{bytes .down}} / {{bytes .down_aborted}} / {{bytes .monthly_download_limit_bytes}}</td>
+<td>
+<a href="/admin/people?edit={{.id}}">Изменить лимиты</a>
+<form method="post" action="/admin/action/traffic_reset" data-confirm="Обнулить счётчики текущего месяца?">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.id}}">
+<button>Сбросить текущий месяц</button>
+</form>
+</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}
+{{define "audit_table"}}<div class="table-scroll">
+<table>
+<tr>
+<th>Время</th>
+<th>Кто</th>
+<th>Событие / объект</th>
+<th>Подробности</th>
+</tr>{{range .Rows}}<tr>
+<td>{{date .time}}</td>
+<td>{{.actor_type}} {{.actor_id}}</td>
+<td>{{.event}} · {{.entity_id}}</td>
+<td>{{.details}}</td>
+</tr>{{end}}</table>
+</div>{{end}}
+{{define "admin_audit"}}{{template "head" .}}<h1>Журнал аудита</h1>
+<form method="get" class="filters">
+<label>Событие<input type="text" name="event" value="{{.event}}" >
+</label>
+<label>Тип субъекта<input type="text" name="actor_type" value="{{.actor_type}}" >
+</label>
+<label>ID субъекта<input type="text" name="actor_id" value="{{.actor_id}}" >
+</label>
+<label>Тип объекта<input type="text" name="entity_type" value="{{.entity_type}}" >
+</label>
+<label>ID объекта<input type="text" name="entity_id" value="{{.entity_id}}" >
+</label>
+<button>Фильтровать</button>
+</form>{{template "audit_table" .}}{{template "pages" .}}{{template "foot" .}}{{end}}
+{{define "admin_settings"}}{{template "head" .}}<h1>Настройки</h1>
+<section class="card">
+<h2>Настройки по умолчанию</h2>
+<form method="post" action="/admin/action/settings_save" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<div class="grid">
+<label>Хранилище, ГиБ<input type="number" name="quota_gb" value="{{gib .Config.StorageDefaults.QuotaBytes}}" min="0" step="any" required>
+</label>
+<label>Загрузка в месяц, ГиБ<input type="number" name="upload_limit_gb" value="{{gib .Config.StorageDefaults.MonthlyUploadLimit}}" min="0" step="any" required>
+</label>
+<label>Скачивание в месяц, ГиБ<input type="number" name="download_limit_gb" value="{{gib .Config.StorageDefaults.MonthlyDownloadLimit}}" min="0" step="any" required>
+</label>
+<label>Размер файла, ГиБ<input type="number" name="max_file_gb" value="{{gib .Config.StorageDefaults.MaxFileSize}}" min="0" step="any" required>
+</label>
+<label>Загрузок одновременно<input type="number" name="max_concurrent" value="{{.Config.StorageDefaults.MaxConcurrentUploads}}" min="1" max="100" required>
+</label>
+<label>Хранение по умолчанию, дней<input type="number" name="default_expiry" value="{{.Config.StorageDefaults.DefaultExpiryDays}}" min="1" max="3650" required>
+</label>
+<label>Приём, Мбит/с<input type="number" name="upload_mbps" value="{{.Config.SpeedLimits.ExternalUploadMbps}}" min="10" max="1000" required>
+</label>
+<label>Отдача, Мбит/с<input type="number" name="download_mbps" value="{{.Config.SpeedLimits.ExternalDownloadMbps}}" min="10" max="1000" required>
+</label>
+<label>Всплеск, МиБ<input type="number" name="burst_mb" value="{{.Config.SpeedLimits.BurstMB}}" min="1" max="128" required>
+</label>
+<label>ZIP: число файлов<input type="number" name="zip_files" value="{{.Config.ZipLimits.MaxFiles}}" min="1" max="10000" required>
+</label>
+<label>ZIP: размер, ГиБ<input type="number" name="zip_gb" value="{{.Config.ZipLimits.MaxTotalGB}}" min="1" max="1048576" required>
+</label>
+<label>Варианты хранения, дней через запятую<input type="text" name="expiry_options" value="{{joinints .Config.ExpiryOptions}}" required>
+</label>
+<label>Подозрительные расширения через запятую<input type="text" name="suspicious" value="{{join .Config.SuspiciousExtensions}}" >
+</label>
+</div>
+<label class="check">
+<input name="allow_forever" type="checkbox" {{if .Config.StorageDefaults.AllowUserKeepForever}}checked{{end}}>Разрешать новым пользователям бессрочное хранение</label>
+<label class="check">
+<input name="quarantine" type="checkbox" {{if .Config.StorageDefaults.QuarantineSuspicious}}checked{{end}}>Карантин подозрительных файлов (иначе только флаг)</label>
+<button>Сохранить настройки</button>
+</form>
+</section>
+<h2>Активные блокировки</h2>
+<form method="post" action="/admin/action/locks_clear" data-confirm="Сбросить все ограничения частоты?">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<button>Сбросить все блокировки и окна запросов</button>
+</form>
+<div class="table-scroll">
+<table>
+<tr>
+<th>Причина</th>
+<th>Ключ</th>
+<th>До</th>
+<th>
+</th>
+</tr>{{range .Rows}}<tr>
+<td>{{.reason}}</td>
+<td class="hash">{{.key}}</td>
+<td>{{date .expires_at}}</td>
+<td>
+<form method="post" action="/admin/action/lock_clear" >
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="hidden" name="key" value="{{.key}}">
+<button>Снять</button>
+</form>
+</td>
+</tr>{{end}}</table>
+</div>{{template "foot" .}}{{end}}

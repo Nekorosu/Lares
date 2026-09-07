@@ -1,112 +1,103 @@
 package ratelimit
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
-
-	"golang.org/x/time/rate"
 )
 
-type RateLimiter struct {
-	db       *sql.DB
-	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
-	lastSeen map[string]time.Time
+type RateLimiter struct{ db *sql.DB }
+
+func NewRateLimiter(db *sql.DB) *RateLimiter { return &RateLimiter{db} }
+
+type Rule struct {
+	Key    string
+	Count  int
+	Window time.Duration
 }
 
-func NewRateLimiter(db *sql.DB) *RateLimiter {
-	rl := &RateLimiter{
-		db:       db,
-		limiters: make(map[string]*rate.Limiter),
-		lastSeen: make(map[string]time.Time),
+// Sliding windows persisted in SQLite; all requested keys are checked and recorded atomically.
+func (r *RateLimiter) Allow(ctx context.Context, rules ...Rule) (bool, time.Duration, error) {
+	ok, wait, _, err := r.AllowDetailed(ctx, rules...)
+	return ok, wait, err
+}
+func (r *RateLimiter) AllowDetailed(ctx context.Context, rules ...Rule) (bool, time.Duration, string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, 0, "", err
 	}
-	go rl.cleanupLoop()
-	return rl
-}
-
-func (rl *RateLimiter) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		rl.mu.Lock()
-		for key, t := range rl.lastSeen {
-			if time.Since(t) > 30*time.Minute {
-				delete(rl.limiters, key)
-				delete(rl.lastSeen, key)
-			}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	for _, v := range rules {
+		var count int
+		var first time.Time
+		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM request_events WHERE key=? AND time>?", v.Key, now.Add(-v.Window)).Scan(&count); err != nil {
+			return false, 0, "", err
 		}
-		rl.mu.Unlock()
+		if count >= v.Count {
+			wait := v.Window
+			if err = tx.QueryRowContext(ctx, "SELECT time FROM request_events WHERE key=? AND time>? ORDER BY time LIMIT 1", v.Key, now.Add(-v.Window)).Scan(&first); err == nil {
+				wait = time.Until(first.Add(v.Window))
+			} else {
+				return false, 0, "", err
+			}
+			return false, wait, v.Key, nil
+		}
 	}
-}
-
-func (rl *RateLimiter) AllowTokenBucket(key string, limitPerMin int, burst int) bool {
-	rl.mu.Lock()
-	limiter, exists := rl.limiters[key]
-	if !exists {
-		r := rate.Every(time.Minute / time.Duration(limitPerMin))
-		limiter = rate.NewLimiter(r, burst)
-		rl.limiters[key] = limiter
+	for _, v := range rules {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO request_events(key,time) VALUES(?,?)", v.Key, now); err != nil {
+			return false, 0, "", err
+		}
 	}
-	rl.lastSeen[key] = time.Now()
-	rl.mu.Unlock()
-
-	return limiter.Allow()
+	return true, 0, "", tx.Commit()
 }
-
-func (rl *RateLimiter) IsLocked(key string) (bool, time.Duration, string) {
-	if rl.db == nil {
+func (r *RateLimiter) IsLocked(key string) (bool, time.Duration, string) {
+	var t time.Time
+	var reason string
+	err := r.db.QueryRow("SELECT expires_at,reason FROM rate_limit_locks WHERE key=? AND expires_at>?", key, time.Now().UTC()).Scan(&t, &reason)
+	if err == sql.ErrNoRows {
 		return false, 0, ""
 	}
-
-	var expiresAt time.Time
-	var reason string
-	err := rl.db.QueryRow("SELECT expires_at, reason FROM rate_limit_locks WHERE key = ? AND expires_at > ?", key, time.Now().UTC()).Scan(&expiresAt, &reason)
-	if err == nil {
-		remaining := time.Until(expiresAt)
-		return true, remaining, reason
+	if err != nil {
+		return true, time.Minute, "ошибка проверки блокировки"
 	}
-	return false, 0, ""
+	return true, time.Until(t), reason
 }
-
-func (rl *RateLimiter) Lock(key, lockType, reason string, duration time.Duration) error {
-	if rl.db == nil {
-		return nil
+func (r *RateLimiter) Lock(key, typ, reason string, d time.Duration) error {
+	_, e := r.db.Exec("INSERT INTO rate_limit_locks(key,type,reason,expires_at,created_at) VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET expires_at=excluded.expires_at,reason=excluded.reason", key, typ, reason, time.Now().UTC().Add(d), time.Now().UTC())
+	return e
+}
+func (r *RateLimiter) Unlock(key string) error {
+	tx, e := r.db.Begin()
+	if e != nil {
+		return e
 	}
-
-	expiresAt := time.Now().UTC().Add(duration)
-	createdAt := time.Now().UTC()
-
-	query := `
-		INSERT INTO rate_limit_locks (key, type, reason, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET
-			expires_at = excluded.expires_at,
-			reason = excluded.reason,
-			created_at = excluded.created_at
-	`
-	_, err := rl.db.Exec(query, key, lockType, reason, expiresAt, createdAt)
-	return err
-}
-
-func (rl *RateLimiter) Unlock(key string) error {
-	if rl.db == nil {
-		return nil
+	defer tx.Rollback()
+	if _, e = tx.Exec("DELETE FROM rate_limit_locks WHERE key=?", key); e != nil {
+		return e
 	}
-	_, err := rl.db.Exec("DELETE FROM rate_limit_locks WHERE key = ?", key)
-	return err
-}
-
-func (rl *RateLimiter) ClearAllLocks() error {
-	if rl.db == nil {
-		return nil
+	if _, e = tx.Exec("DELETE FROM request_events WHERE key=? OR substr(key,1,?)=?", key, len(key)+1, key+":"); e != nil {
+		return e
 	}
-	_, err := rl.db.Exec("DELETE FROM rate_limit_locks")
-	return err
+	return tx.Commit()
 }
-
+func (r *RateLimiter) ClearAllLocks() error {
+	tx, e := r.db.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	if _, e = tx.Exec("DELETE FROM rate_limit_locks"); e != nil {
+		return e
+	}
+	if _, e = tx.Exec("DELETE FROM request_events"); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
 func SetRetryAfterHeader(w http.ResponseWriter, seconds int) {
-	w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
-	w.WriteHeader(http.StatusTooManyRequests)
+	w.Header().Set("Retry-After", fmt.Sprint(max(1, seconds)))
+	w.WriteHeader(429)
 }
