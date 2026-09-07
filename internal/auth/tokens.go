@@ -23,19 +23,23 @@ func HashWithSalt(input, salt string) string {
 
 func GenerateRandomToken(bytesLen int) string {
 	b := make([]byte, bytesLen)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
 	return hex.EncodeToString(b)
 }
 
 func GenerateRandomID(bytesLen int) string {
 	b := make([]byte, bytesLen)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
 	return hex.EncodeToString(b)
 }
 
-// GenerateInviteCode creates a 16-character base32 code in format XXXX-XXXX-XXXX-XXXX without ambiguous characters (no 0, O, 1, I, L, 8, B).
+// GenerateInviteCode uses 32 symbols, excluding 0/O and 1/I, in four groups of four.
 func GenerateInviteCode() string {
-	const charset = "2345679ACDEFGHJKMNPQRSTVWXYZ"
+	const charset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 	var sb strings.Builder
 	for i := 0; i < 16; i++ {
 		if i > 0 && i%4 == 0 {
@@ -43,7 +47,7 @@ func GenerateInviteCode() string {
 		}
 		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
 		if err != nil {
-			sb.WriteByte(charset[0])
+			panic(err)
 		} else {
 			sb.WriteByte(charset[num.Int64()])
 		}

@@ -2,194 +2,300 @@ package storage
 
 import (
 	"errors"
-	"fmt"
+	"io"
+	"lares/internal/auth"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
-
-	"lares/internal/auth"
+	"unicode"
+	"unicode/utf8"
 )
 
-var (
-	ErrInsufficientDiskSpace = errors.New("недостаточно свободного места на сервере")
-	ErrCriticalDiskSpace     = errors.New("критический дефицит места на диске")
-	ErrInsufficientInodes    = errors.New("недостаточно свободных inodes на сервере")
-)
+var ErrInsufficientDiskSpace = errors.New("недостаточно свободного места")
+var ErrInsufficientInodes = errors.New("недостаточно свободных inode")
+var ErrCriticalDiskSpace = errors.New("критическая нехватка места")
 
 type StorageManager struct {
-	dataDir             string
-	tmpDir              string
-	minFreeSpaceGB      int64
-	criticalFreeSpaceGB int64
-	minFreeInodes       int64
+	dataDir, tmpDir                                    string
+	minFreeSpaceGB, criticalFreeSpaceGB, minFreeInodes int64
+	root                                               *os.File
 }
 
-func NewStorageManager(dataDir, tmpDir string, minFreeGB, criticalFreeGB, minInodes int64) (*StorageManager, error) {
-	if err := os.MkdirAll(dataDir, 0750); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
+// Resolve each directory component from / using dirfds; no ancestor symlink is followed.
+func openDirectory(path string) (int, error) {
+	if !filepath.IsAbs(path) {
+		return -1, errors.New("требуется абсолютный каталог")
 	}
-	if err := os.MkdirAll(tmpDir, 0750); err != nil {
-		return nil, fmt.Errorf("failed to create tmp directory: %w", err)
+	fd, e := syscall.Open("/", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if e != nil {
+		return -1, e
 	}
-
-	return &StorageManager{
-		dataDir:             dataDir,
-		tmpDir:              tmpDir,
-		minFreeSpaceGB:      minFreeGB,
-		criticalFreeSpaceGB: criticalFreeGB,
-		minFreeInodes:       minInodes,
-	}, nil
+	for _, component := range strings.Split(strings.TrimPrefix(filepath.Clean(path), "/"), "/") {
+		if component == "" {
+			continue
+		}
+		if e = syscall.Mkdirat(fd, component, 0750); e != nil && e != syscall.EEXIST {
+			syscall.Close(fd)
+			return -1, e
+		}
+		next, err := syscall.Openat(fd, component, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		syscall.Close(fd)
+		if err != nil {
+			return -1, err
+		}
+		fd = next
+	}
+	if e = syscall.Fchmod(fd, 0750); e != nil {
+		syscall.Close(fd)
+		return -1, e
+	}
+	return fd, nil
 }
-
-func (sm *StorageManager) UpdateReserves(minFreeGB, criticalFreeGB, minInodes int64) {
-	sm.minFreeSpaceGB = minFreeGB
-	sm.criticalFreeSpaceGB = criticalFreeGB
-	sm.minFreeInodes = minInodes
-}
-
-func (sm *StorageManager) GetDiskUsage() (freeBytes int64, totalBytes int64, freeInodes int64, err error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(sm.dataDir, &stat); err != nil {
-		return 0, 0, 0, err
+func NewStorageManager(data, tmp string, min, critical, inodes int64) (*StorageManager, error) {
+	fd, e := openDirectory(data)
+	if e != nil {
+		return nil, e
 	}
-
-	freeBytes = int64(stat.Bavail) * int64(stat.Bsize)
-	totalBytes = int64(stat.Blocks) * int64(stat.Bsize)
-	freeInodes = int64(stat.Ffree)
-	return freeBytes, totalBytes, freeInodes, nil
-}
-
-func (sm *StorageManager) CheckDiskSpaceForNewUpload(requiredBytes int64) error {
-	freeBytes, _, freeInodes, err := sm.GetDiskUsage()
-	if err != nil {
-		return fmt.Errorf("failed to check disk space: %w", err)
+	t, e := openDirectory(tmp)
+	if e != nil {
+		syscall.Close(fd)
+		return nil, e
 	}
-
-	minBytes := sm.minFreeSpaceGB * 1024 * 1024 * 1024
-	if freeBytes < minBytes || (freeBytes-requiredBytes) < minBytes {
+	syscall.Close(t)
+	return &StorageManager{data, tmp, min, critical, inodes, os.NewFile(uintptr(fd), data)}, nil
+}
+func (s *StorageManager) Close() error { return s.root.Close() }
+func (s *StorageManager) GetDiskUsage() (int64, int64, int64, error) {
+	var st syscall.Statfs_t
+	err := syscall.Fstatfs(int(s.root.Fd()), &st)
+	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize), int64(st.Ffree), err
+}
+func CheckReserve(free, inodes, required, pending, min, minInodes int64) error {
+	if required < 0 || pending < 0 || free < min || pending > free-min || required > free-min-pending {
 		return ErrInsufficientDiskSpace
 	}
-
-	if freeInodes < sm.minFreeInodes {
+	if inodes <= minInodes {
 		return ErrInsufficientInodes
 	}
-
 	return nil
 }
-
-func (sm *StorageManager) CheckDiskSpaceCritical() error {
-	freeBytes, _, _, err := sm.GetDiskUsage()
+func (s *StorageManager) CheckDiskSpaceForNewUpload(n int64) error { return s.CheckReserved(n, 0) }
+func (s *StorageManager) CheckReserved(n, pending int64) error {
+	free, _, inodes, err := s.GetDiskUsage()
 	if err != nil {
 		return err
 	}
-
-	criticalBytes := sm.criticalFreeSpaceGB * 1024 * 1024 * 1024
-	if freeBytes < criticalBytes {
+	return CheckReserve(free, inodes, n, pending, s.minFreeSpaceGB<<30, s.minFreeInodes)
+}
+func (s *StorageManager) CheckDiskSpaceCritical() error {
+	free, _, _, err := s.GetDiskUsage()
+	if err != nil {
+		return err
+	}
+	if free < s.criticalFreeSpaceGB<<30 {
 		return ErrCriticalDiskSpace
 	}
-
 	return nil
 }
-
-func (sm *StorageManager) GetShardedPath(fileOrUploadID string) string {
-	idHash := auth.HashString(fileOrUploadID)
-	if len(idHash) < 4 {
-		return filepath.Join(sm.dataDir, fileOrUploadID)
+func (s *StorageManager) relative(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		var err error
+		p, err = filepath.Rel(s.dataDir, p)
+		if err != nil {
+			return "", err
+		}
 	}
-	shard1 := idHash[:2]
-	shard2 := idHash[2:4]
-	return filepath.Join(sm.dataDir, shard1, shard2, fileOrUploadID)
+	if p == "" || p == "." || strings.Contains(p, "\\") {
+		return "", errors.New("небезопасный путь")
+	}
+	for _, v := range strings.Split(p, "/") {
+		if v == "" || v == "." || v == ".." {
+			return "", errors.New("небезопасный путь")
+		}
+	}
+	return p, nil
 }
 
-func (sm *StorageManager) GetPartPath(uploadID string) string {
-	sharded := sm.GetShardedPath(uploadID)
-	return sharded + ".part"
-}
-
-func (sm *StorageManager) PreparePartFile(uploadID string) (*os.File, string, error) {
-	partPath := sm.GetPartPath(uploadID)
-	dir := filepath.Dir(partPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return nil, "", fmt.Errorf("failed to create directory for upload: %w", err)
-	}
-
-	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR, 0640)
+// Walk parent directories through dirfds, never following symlinks, including races.
+func (s *StorageManager) parent(p string, create bool) (int, string, error) {
+	rel, err := s.relative(p)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to open part file: %w", err)
+		return -1, "", err
 	}
-
-	return f, partPath, nil
-}
-
-func (sm *StorageManager) FinalizeUpload(uploadID, fileID string) (string, error) {
-	partPath := sm.GetPartPath(uploadID)
-	finalPath := sm.GetShardedPath(fileID)
-
-	finalDir := filepath.Dir(finalPath)
-	if err := os.MkdirAll(finalDir, 0750); err != nil {
-		return "", fmt.Errorf("failed to create directory for final file: %w", err)
+	parts := strings.Split(rel, "/")
+	fd, err := syscall.Dup(int(s.root.Fd()))
+	if err != nil {
+		return -1, "", err
 	}
-
-	if err := os.Rename(partPath, finalPath); err != nil {
-		return "", fmt.Errorf("failed to rename part file to final path: %w", err)
+	for _, v := range parts[:len(parts)-1] {
+		if create {
+			e := syscall.Mkdirat(fd, v, 0750)
+			if e != nil && e != syscall.EEXIST {
+				syscall.Close(fd)
+				return -1, "", e
+			}
+		}
+		next, e := syscall.Openat(fd, v, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		syscall.Close(fd)
+		if e != nil {
+			return -1, "", e
+		}
+		fd = next
 	}
-
-	_ = os.Chmod(finalPath, 0640)
-	return finalPath, nil
+	return fd, parts[len(parts)-1], nil
 }
-
-func (sm *StorageManager) DeletePartFile(uploadID string) {
-	partPath := sm.GetPartPath(uploadID)
-	_ = os.Remove(partPath)
+func (s *StorageManager) Open(p string) (*os.File, error) { return s.open(p, syscall.O_RDONLY, false) }
+func (s *StorageManager) open(p string, flags int, create bool) (*os.File, error) {
+	fd, name, err := s.parent(p, create)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+	f, err := syscall.Openat(fd, name, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0640)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(f), p)
+	st, err := file.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		file.Close()
+		return nil, errors.New("ожидался обычный файл")
+	}
+	if err = file.Chmod(0640); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
 }
-
-func (sm *StorageManager) ResolvePath(storedPath string) string {
-	if storedPath == "" {
+func (s *StorageManager) GetShardedPath(id string) string {
+	if strings.ContainsAny(id, "/\\.") || id == "" {
 		return ""
 	}
-	if filepath.IsAbs(storedPath) {
-		return storedPath
-	}
-	return filepath.Join(sm.dataDir, storedPath)
+	h := auth.HashString(id)
+	return filepath.Join(s.dataDir, h[:2], h[2:4], id)
 }
-
-func (sm *StorageManager) DeleteFile(storedPath string) error {
-	fullPath := sm.ResolvePath(storedPath)
-	if fullPath == "" {
-		return errors.New("empty stored path")
+func (s *StorageManager) GetPartPath(id string) string {
+	p := s.GetShardedPath(id)
+	if p == "" {
+		return ""
 	}
-	cleanFull := filepath.Clean(fullPath)
-	cleanData := filepath.Clean(sm.dataDir)
-	if !strings.HasPrefix(cleanFull, cleanData) {
-		return errors.New("invalid stored path out of data dir boundary")
-	}
-	return os.Remove(cleanFull)
+	return p + ".part"
 }
-
-var invalidFilenameChars = regexp.MustCompile(`[^\w\.\-\s\(\)\[\]]`)
-
-func SanitizeFilename(originalName string) string {
-	// Replace backslashes with forward slashes for cross-platform safety
-	normalized := strings.ReplaceAll(originalName, "\\", "/")
-	filename := filepath.Base(normalized)
-	filename = strings.TrimSpace(filename)
-
-
-	// Remove leading dots or slashes
-	filename = strings.TrimLeft(filename, ".\\/")
-
-	if filename == "" {
-		filename = "unnamed_file"
+func (s *StorageManager) PreparePartFile(id string) (*os.File, string, error) {
+	p := s.GetPartPath(id)
+	f, err := s.open(p, syscall.O_CREAT|syscall.O_RDWR, true)
+	return f, p, err
+}
+func (s *StorageManager) FinalizeUpload(id, fileID string) (string, error) {
+	old := s.GetPartPath(id)
+	dest := s.GetShardedPath(fileID)
+	a, an, err := s.parent(old, false)
+	if err != nil {
+		return "", err
 	}
-
-	// Truncate to 255 chars
-	if len(filename) > 255 {
-		ext := filepath.Ext(filename)
-		base := filename[:255-len(ext)]
-		filename = base + ext
+	defer syscall.Close(a)
+	b, bn, err := s.parent(dest, true)
+	if err != nil {
+		return "", err
 	}
-
-	return filename
+	defer syscall.Close(b)
+	f, err := s.Open(old)
+	if err != nil {
+		return "", err
+	}
+	err = f.Sync()
+	f.Close()
+	if err != nil {
+		return "", err
+	}
+	if err = syscall.Renameat(a, an, b, bn); err != nil {
+		return "", err
+	}
+	if err = syscall.Fsync(a); err != nil {
+		return "", err
+	}
+	if err = syscall.Fsync(b); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+func (s *StorageManager) DeleteFile(p string) error {
+	fd, name, err := s.parent(p, false)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	err = syscall.Unlinkat(fd, name)
+	if err == syscall.ENOENT {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return syscall.Fsync(fd)
+}
+func (s *StorageManager) DeletePartFile(id string) error { return s.DeleteFile(s.GetPartPath(id)) }
+func (s *StorageManager) ResolvePath(p string) string {
+	rel, err := s.relative(p)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(s.dataDir, rel)
+}
+func (s *StorageManager) Relative(p string) (string, error) { return s.relative(p) }
+func (s *StorageManager) Walk(fn func(string, os.FileInfo) error) error {
+	return filepath.Walk(s.dataDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("symlink в хранилище")
+		}
+		if info.IsDir() {
+			return nil
+		}
+		return fn(p, info)
+	})
+}
+func SanitizeFilename(s string) string {
+	s = filepath.Base(strings.ReplaceAll(s, "\\", "/"))
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.TrimLeft(strings.TrimSpace(s), ". ")
+	if s == "" {
+		s = "без-имени"
+	}
+	ext := filepath.Ext(s)
+	if len(ext) > 32 {
+		ext = ""
+	}
+	if len(s) > 255 {
+		n := 255 - len(ext)
+		prefix := s[:n]
+		for !utf8.ValidString(prefix) {
+			prefix = prefix[:len(prefix)-1]
+		}
+		s = prefix + ext
+	}
+	return s
+}
+func Sniff(f *os.File) (string, error) {
+	b := make([]byte, 512)
+	_, err := f.Seek(0, io.SeekStart)
+	if err != nil {
+		return "", err
+	}
+	n, err := f.Read(b)
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	return string(b[:n]), nil
 }

@@ -1,188 +1,47 @@
 package traffic
 
 import (
+	"context"
 	"database/sql"
-	"fmt"
 	"time"
 )
 
-type Manager struct {
-	db *sql.DB
+func GetCurrentMonth() string { return time.Now().Local().Format("2006-01") }
+func CalculateEffectiveUsed(completed, aborted, limit int64, upload bool) int64 {
+	allowance := limit
+	if upload {
+		allowance = limit / 2
+	}
+	return completed + max(0, aborted-allowance)
 }
 
-func NewManager(db *sql.DB) *Manager {
-	return &Manager{db: db}
+// Zero is a zero quota. Only ignore_traffic_quota bypasses external traffic limits.
+func CheckGraceRule(used, pending, size, limit int64) bool {
+	if used < 0 || pending < 0 || size < 0 || limit < 0 || used > limit || pending > limit-used {
+		return false
+	}
+	return size/2+size%2 <= limit-used-pending
 }
-
-func GetCurrentMonth() string {
-	return time.Now().Local().Format("2006-01")
-}
-
-func CalculateEffectiveUsed(completedBytes, abortedBytes, limitBytes int64, isUpload bool) int64 {
-	var allowanceRatio float64 = 1.0
-	if isUpload {
-		allowanceRatio = 0.5
-	}
-	allowance := int64(float64(limitBytes) * allowanceRatio)
-
-	excessAborted := abortedBytes - allowance
-	if excessAborted < 0 {
-		excessAborted = 0
-	}
-
-	return completedBytes + excessAborted
-}
-
-func CheckGraceRule(effectiveUsed, pendingReserved, newFileSize, limitBytes int64) bool {
-	if limitBytes <= 0 {
-		return true // Unlimited
-	}
-	projected := effectiveUsed + pendingReserved + (newFileSize / 2)
-	return projected <= limitBytes
-}
-
-func (m *Manager) CanUpload(personID int64, monthlyLimit, declaredSize int64, ignoreQuota bool, isLocal bool) (bool, error) {
-	if isLocal || ignoreQuota || monthlyLimit <= 0 {
-		return true, nil
-	}
-
-	month := GetCurrentMonth()
-
-	var completed, aborted int64
-	err := m.db.QueryRow(`
-		SELECT upload_completed_bytes, upload_aborted_bytes
-		FROM traffic_counters
-		WHERE person_id = ? AND month = ?
-	`, personID, month).Scan(&completed, &aborted)
-
-	if err != nil && err != sql.ErrNoRows {
-		return false, fmt.Errorf("failed to query upload traffic counter: %w", err)
-	}
-
-	// Pending reserved uploads for this person
-	var pendingReserved int64
-	_ = m.db.QueryRow(`
-		SELECT COALESCE(SUM(declared_size - received_bytes), 0)
-		FROM uploads
-		WHERE person_id = ? AND status IN ('reserved', 'uploading')
-	`, personID).Scan(&pendingReserved)
-
-	effectiveUsed := CalculateEffectiveUsed(completed, aborted, monthlyLimit, true)
-	return CheckGraceRule(effectiveUsed, pendingReserved, declaredSize, monthlyLimit), nil
-}
-
-func (m *Manager) CanDownload(personID int64, monthlyLimit, fileSize int64, ignoreQuota bool, isLocal bool) (bool, error) {
-	if isLocal || ignoreQuota || monthlyLimit <= 0 {
-		return true, nil
-	}
-
-	month := GetCurrentMonth()
-
-	var completed, aborted int64
-	err := m.db.QueryRow(`
-		SELECT download_completed_bytes, download_aborted_bytes
-		FROM traffic_counters
-		WHERE person_id = ? AND month = ?
-	`, personID, month).Scan(&completed, &aborted)
-
-	if err != nil && err != sql.ErrNoRows {
-		return false, fmt.Errorf("failed to query download traffic counter: %w", err)
-	}
-
-	effectiveUsed := CalculateEffectiveUsed(completed, aborted, monthlyLimit, false)
-	return CheckGraceRule(effectiveUsed, 0, fileSize, monthlyLimit), nil
-}
-
-func (m *Manager) RecordUploadCompleted(personID int64, bytes int64, isLocal bool) error {
-	if bytes <= 0 {
+func Record(ctx context.Context, tx *sql.Tx, pid int64, month, kind string, n int64) error {
+	if n <= 0 {
 		return nil
 	}
-	month := GetCurrentMonth()
-	if isLocal {
-		query := `
-			INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
-			VALUES (?, ?, 0, 0, 0, 0, ?, 0, ?)
-			ON CONFLICT(person_id, month) DO UPDATE SET
-				local_upload_bytes = local_upload_bytes + excluded.local_upload_bytes,
-				updated_at = excluded.updated_at
-		`
-		_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
-		return err
+	allowed := map[string]bool{"upload_completed_bytes": true, "upload_aborted_bytes": true, "download_completed_bytes": true, "download_aborted_bytes": true, "local_upload_bytes": true, "local_download_bytes": true}
+	if !allowed[kind] {
+		panic("invalid counter")
 	}
-
-	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
-		VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?)
-		ON CONFLICT(person_id, month) DO UPDATE SET
-			upload_completed_bytes = upload_completed_bytes + excluded.upload_completed_bytes,
-			updated_at = excluded.updated_at
-	`
-	_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
-	return err
+	_, e := tx.ExecContext(ctx, "INSERT INTO traffic_counters(person_id,month,"+kind+",updated_at) VALUES(?,?,?,?) ON CONFLICT(person_id,month) DO UPDATE SET "+kind+"="+kind+"+excluded."+kind+",updated_at=excluded.updated_at", pid, month, n, time.Now().UTC())
+	return e
 }
-
-func (m *Manager) RecordUploadAborted(personID int64, bytes int64, isLocal bool) error {
-	if isLocal || bytes <= 0 {
-		return nil
+func Used(ctx context.Context, tx *sql.Tx, pid int64, limit int64, upload bool) (int64, error) {
+	kind := "download"
+	if upload {
+		kind = "upload"
 	}
-	month := GetCurrentMonth()
-	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
-		VALUES (?, ?, 0, ?, 0, 0, 0, 0, ?)
-		ON CONFLICT(person_id, month) DO UPDATE SET
-			upload_aborted_bytes = upload_aborted_bytes + excluded.upload_aborted_bytes,
-			updated_at = excluded.updated_at
-	`
-	_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
-	return err
-}
-
-func (m *Manager) RecordDownloadCompleted(personID int64, bytes int64, isLocal bool) error {
-	if bytes <= 0 {
-		return nil
+	var c, a int64
+	e := tx.QueryRowContext(ctx, "SELECT "+kind+"_completed_bytes,"+kind+"_aborted_bytes FROM traffic_counters WHERE person_id=? AND month=?", pid, GetCurrentMonth()).Scan(&c, &a)
+	if e == sql.ErrNoRows {
+		return 0, nil
 	}
-	month := GetCurrentMonth()
-	if isLocal {
-		query := `
-			INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
-			VALUES (?, ?, 0, 0, 0, 0, 0, ?, ?)
-			ON CONFLICT(person_id, month) DO UPDATE SET
-				local_download_bytes = local_download_bytes + excluded.local_download_bytes,
-				updated_at = excluded.updated_at
-		`
-		_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
-		return err
-	}
-
-	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, local_upload_bytes, local_download_bytes, updated_at)
-		VALUES (?, ?, 0, 0, ?, 0, 0, 0, ?)
-		ON CONFLICT(person_id, month) DO UPDATE SET
-			download_completed_bytes = download_completed_bytes + excluded.download_completed_bytes,
-			updated_at = excluded.updated_at
-	`
-	_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
-	return err
-}
-
-func (m *Manager) RecordDownloadAborted(personID int64, bytes int64, isLocal bool) error {
-	if isLocal || bytes <= 0 {
-		return nil
-	}
-	month := GetCurrentMonth()
-	query := `
-		INSERT INTO traffic_counters (person_id, month, upload_completed_bytes, upload_aborted_bytes, download_completed_bytes, download_aborted_bytes, updated_at)
-		VALUES (?, ?, 0, 0, 0, ?, ?)
-		ON CONFLICT(person_id, month) DO UPDATE SET
-			download_aborted_bytes = download_aborted_bytes + excluded.download_aborted_bytes,
-			updated_at = excluded.updated_at
-	`
-	_, err := m.db.Exec(query, personID, month, bytes, time.Now().UTC())
-	return err
-}
-
-func (m *Manager) ResetCurrentMonth(personID int64) error {
-	month := GetCurrentMonth()
-	_, err := m.db.Exec("DELETE FROM traffic_counters WHERE person_id = ? AND month = ?", personID, month)
-	return err
+	return CalculateEffectiveUsed(c, a, limit, upload), e
 }

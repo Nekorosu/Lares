@@ -1,7 +1,9 @@
 package audit
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"lares/internal/auth"
@@ -19,9 +21,9 @@ func NewLogger(db *sql.DB, ipHashSalt string) *Logger {
 	}
 }
 
-func (l *Logger) Log(actorType string, actorID int64, event, entityType, entityID, rawIP, details string) {
+func (l *Logger) Log(actorType string, actorID int64, event, entityType, entityID, rawIP, details string) error {
 	if l == nil || l.db == nil {
-		return
+		return errors.New("audit logger is not initialized")
 	}
 
 	ipHash := ""
@@ -33,5 +35,8 @@ func (l *Logger) Log(actorType string, actorID int64, event, entityType, entityI
 		INSERT INTO audit_logs (time, actor_type, actor_id, event, entity_type, entity_id, ip_hash, details)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	_, _ = l.db.Exec(query, time.Now().UTC(), actorType, actorID, event, entityType, entityID, ipHash, details)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, e := l.db.ExecContext(ctx, query, time.Now().UTC(), actorType, actorID, event, entityType, entityID, ipHash, details)
+	return e
 }

@@ -16,7 +16,7 @@ import (
 )
 
 func GenerateTOTPSecret() (string, error) {
-	b := make([]byte, 10) // 80 bits is standard, 16 base32 chars
+	b := make([]byte, 20) // 160 bits
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
@@ -38,14 +38,13 @@ func ValidateTOTP(secret, passcode string) bool {
 	now := time.Now().Unix()
 	step := int64(30)
 
-	// Check current time step and +/- 2 window for clock drift tolerance
-	for _, offset := range []int64{-2, -1, 0, 1, 2} {
+	// Check the current time step and one step of clock drift in each direction.
+	for _, offset := range []int64{-1, 0, 1} {
 		t := (now / step) + offset
 		if subtle.ConstantTimeCompare([]byte(generateCode(key, t)), []byte(passcode)) == 1 {
 			return true
 		}
 	}
-
 
 	return false
 }
@@ -78,4 +77,18 @@ func GenerateTOTPQRCodePNG(username, secret, issuer string) ([]byte, error) {
 	}
 
 	return png, nil
+}
+
+func TOTPStep(secret, code string) int64 {
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(secret))
+	if err != nil || len(key) < 10 || len(code) != 6 {
+		return 0
+	}
+	step := time.Now().Unix() / 30
+	for _, o := range []int64{-1, 0, 1} {
+		if subtle.ConstantTimeCompare([]byte(generateCode(key, step+o)), []byte(code)) == 1 {
+			return step + o
+		}
+	}
+	return 0
 }

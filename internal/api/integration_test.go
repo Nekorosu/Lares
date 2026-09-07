@@ -21,22 +21,14 @@ func setupTestServer(t *testing.T) (*Server, string) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	cfg := &config.Config{
-		DataDir:     filepath.Join(tempDir, "data"),
-		TmpDir:      filepath.Join(tempDir, "tmp"),
-		DBPath:      filepath.Join(tempDir, "lares.db"),
-		SecurityLog: filepath.Join(tempDir, "security.log"),
-		StorageDefaults: config.StorageDefaults{
-			QuotaBytes:           1024 * 1024 * 10,
-			MonthlyUploadLimit:   1024 * 1024 * 10,
-			MonthlyDownloadLimit: 1024 * 1024 * 10,
-			MaxFileSize:          1024 * 1024 * 5,
-		},
-		Secrets: config.Secrets{
-			SessionSecret: "test-secret",
-			IPHashSalt:    "test-salt",
-		},
-	}
+	cfg := config.DefaultConfig()
+	cfg.DataDir = filepath.Join(tempDir, "data")
+	cfg.TmpDir = filepath.Join(tempDir, "tmp")
+	cfg.DBPath = filepath.Join(tempDir, "lares.db")
+	cfg.SecurityLog = filepath.Join(tempDir, "security.log")
+	cfg.BackupDir = filepath.Join(tempDir, "backups")
+	cfg.Secrets = config.Secrets{SessionSecret: "test-secret", IPHashSalt: "test-salt"}
+	cfg.DiskReserve = config.DiskReserve{}
 
 	os.MkdirAll(cfg.DataDir, 0755)
 	os.MkdirAll(cfg.TmpDir, 0755)
@@ -51,6 +43,7 @@ func setupTestServer(t *testing.T) (*Server, string) {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 
+	t.Cleanup(func() { srv.Close(); database.Close(); os.RemoveAll(tempDir) })
 	return srv, tempDir
 }
 
@@ -72,8 +65,6 @@ func insertTestUserAndSession(t *testing.T, srv *Server, token string) int64 {
 
 func TestUnauthenticatedDirectUpload(t *testing.T) {
 	srv, tempDir := setupTestServer(t)
-	defer os.RemoveAll(tempDir)
-	defer srv.db.Close()
 
 	router := srv.Routes()
 
@@ -81,6 +72,8 @@ func TestUnauthenticatedDirectUpload(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/files/upload/direct?filename=test.txt", body)
 	rr := httptest.NewRecorder()
 
+	req.AddCookie(&http.Cookie{Name: "homeshare_csrf", Value: "test-csrf"})
+	req.Header.Set("X-CSRF-Token", "test-csrf")
 	router.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -94,9 +87,7 @@ func TestUnauthenticatedDirectUpload(t *testing.T) {
 }
 
 func TestUploadReservation(t *testing.T) {
-	srv, tempDir := setupTestServer(t)
-	defer os.RemoveAll(tempDir)
-	defer srv.db.Close()
+	srv, _ := setupTestServer(t)
 
 	token := "valid_test_token"
 	insertTestUserAndSession(t, srv, token)
@@ -107,6 +98,8 @@ func TestUploadReservation(t *testing.T) {
 	reqAnon := httptest.NewRequest("POST", "/api/files/upload/reserve", bytes.NewReader([]byte(`{"filename":"test.txt","size":100}`)))
 	reqAnon.Header.Set("Content-Type", "application/json")
 	rrAnon := httptest.NewRecorder()
+	reqAnon.AddCookie(&http.Cookie{Name: "homeshare_csrf", Value: "test-csrf"})
+	reqAnon.Header.Set("X-CSRF-Token", "test-csrf")
 	router.ServeHTTP(rrAnon, reqAnon)
 	if rrAnon.Code != http.StatusUnauthorized {
 		t.Errorf("Anonymous reservation should be rejected, got %d", rrAnon.Code)
@@ -116,7 +109,7 @@ func TestUploadReservation(t *testing.T) {
 	reqUser := httptest.NewRequest("POST", "/api/files/upload/reserve", bytes.NewReader([]byte(`{"filename":"test2.txt","size":100}`)))
 	reqUser.Header.Set("Content-Type", "application/json")
 	reqUser.AddCookie(&http.Cookie{Name: "homeshare_session", Value: token})
-	
+
 	csrfToken := "test-csrf-token"
 	reqUser.AddCookie(&http.Cookie{Name: "homeshare_csrf", Value: csrfToken})
 	reqUser.Header.Set("X-CSRF-Token", csrfToken)
@@ -124,14 +117,12 @@ func TestUploadReservation(t *testing.T) {
 	rrUser := httptest.NewRecorder()
 	router.ServeHTTP(rrUser, reqUser)
 	if rrUser.Code != http.StatusOK {
-		t.Errorf("User reservation should be allowed, got %d", rrUser.Code)
+		t.Errorf("User reservation should be allowed, got %d: %s", rrUser.Code, rrUser.Body.String())
 	}
 }
 
 func TestQueryStringTokenAuthentication(t *testing.T) {
-	srv, tempDir := setupTestServer(t)
-	defer os.RemoveAll(tempDir)
-	defer srv.db.Close()
+	srv, _ := setupTestServer(t)
 
 	token := "query_test_token"
 	insertTestUserAndSession(t, srv, token)
@@ -142,7 +133,7 @@ func TestQueryStringTokenAuthentication(t *testing.T) {
 	reqQuery := httptest.NewRequest("GET", "/api/auth/me?token="+token, nil)
 	rrQuery := httptest.NewRecorder()
 	router.ServeHTTP(rrQuery, reqQuery)
-	
+
 	if rrQuery.Code == http.StatusOK {
 		var res map[string]interface{}
 		json.Unmarshal(rrQuery.Body.Bytes(), &res)
@@ -158,7 +149,7 @@ func TestQueryStringTokenAuthentication(t *testing.T) {
 	reqCookie.AddCookie(&http.Cookie{Name: "homeshare_session", Value: token})
 	rrCookie := httptest.NewRecorder()
 	router.ServeHTTP(rrCookie, reqCookie)
-	
+
 	if rrCookie.Code != http.StatusOK {
 		t.Errorf("Cookie token should authenticate, got %d", rrCookie.Code)
 	} else {

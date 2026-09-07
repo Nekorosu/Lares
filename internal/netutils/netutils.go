@@ -14,7 +14,10 @@ func NewNetworkChecker(localCIDR string) (*NetworkChecker, error) {
 	checker := &NetworkChecker{}
 	if localCIDR != "" {
 		_, ipNet, err := net.ParseCIDR(localCIDR)
-		if err == nil {
+		if err != nil {
+			return nil, err
+		}
+		{
 			checker.localSubnets = append(checker.localSubnets, ipNet)
 		}
 	}
@@ -36,15 +39,7 @@ func GetClientIP(r *http.Request) string {
 				return trimmed
 			}
 		}
-		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			parts := strings.Split(forwarded, ",")
-			if len(parts) > 0 {
-				trimmed := strings.TrimSpace(parts[0])
-				if parsed := net.ParseIP(trimmed); parsed != nil {
-					return trimmed
-				}
-			}
-		}
+
 	}
 
 	return remoteHost
@@ -68,4 +63,16 @@ func (c *NetworkChecker) IsLocal(r *http.Request) bool {
 	}
 
 	return false
+}
+
+func IsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback() && r.Header.Get("X-Forwarded-Proto") == "https"
 }

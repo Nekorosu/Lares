@@ -41,3 +41,14 @@ func TestCheckGraceRule(t *testing.T) {
 		t.Fatal("Expected grace rule to block transfer, but got true")
 	}
 }
+
+func TestGraceOddBytesZeroAndOverflow(t *testing.T) {
+	for _, tt := range []struct {
+		used, pending, size, limit int64
+		want                       bool
+	}{{0, 0, 1, 0, false}, {0, 0, 3, 1, false}, {0, 0, 2, 1, true}, {2, 0, 0, 1, false}, {0, 1, 2, 1, false}, {0, 0, 1 << 62, 1 << 62, true}, {1 << 62, 1 << 62, 1, 1 << 62, false}} {
+		if got := CheckGraceRule(tt.used, tt.pending, tt.size, tt.limit); got != tt.want {
+			t.Fatal(tt, got)
+		}
+	}
+}

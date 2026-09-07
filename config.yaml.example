@@ -3,16 +3,18 @@ base_url: "https://files.example.duckdns.org"
 
 data_dir: "/srv/media/fileshare/data"
 tmp_dir: "/srv/media/fileshare/tmp"
-db_path: "/srv/media/fileshare/db/homeshare.db"
+db_path: "/srv/media/fileshare/db/lares.db"
 backup_dir: "/home/fileshare-backup"
 log_dir: "/var/log/homeshare"
 security_log: "/var/log/homeshare/security.log"
 
 local_cidr: "192.168.32.0/24"
 
-# secrets:
-#   session_secret: "GENERATE_YOUR_OWN_SECRET_KEY"
-#   ip_hash_salt: "GENERATE_YOUR_OWN_IP_HASH_SALT"
+# Generate the real file ONCE using: homeshare config init
+# Empty secrets below intentionally prevent serving this example as-is.
+secrets:
+  session_secret: ""
+  ip_hash_salt: ""
 
 storage_defaults:
   quota_bytes: 107374182400 # 100 GB
@@ -69,3 +71,16 @@ suspicious_extensions:
   - apk
   - hta
   - cpl
+
+expiry_options: [1, 7, 14, 30]
+rate_limits:
+  enforce_local: false # Login/invite limits ALWAYS apply, including LAN.
+  upload_person_hour: 10
+  upload_ip_hour: 20
+  chunk_minute: 120
+  download_person_minute: 120
+  download_ip_minute: 300
+  zip_hour: 5
+  zip_day: 20
+  list_minute: 120
+  admin_minute: 120

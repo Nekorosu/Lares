@@ -5,12 +5,12 @@ import (
 )
 
 type AdminUser struct {
-	ID           int64     `json:"id" db:"id"`
-	Username     string    `json:"username" db:"username"`
-	PasswordHash string    `json:"-" db:"password_hash"`
-	TOTPSecret   string    `json:"-" db:"totp_secret"`
-	TOTPEnabled  bool      `json:"totp_enabled" db:"totp_enabled"`
-	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	ID           int64      `json:"id" db:"id"`
+	Username     string     `json:"username" db:"username"`
+	PasswordHash string     `json:"-" db:"password_hash"`
+	TOTPSecret   string     `json:"-" db:"totp_secret"`
+	TOTPEnabled  bool       `json:"totp_enabled" db:"totp_enabled"`
+	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
 	LastLoginAt  *time.Time `json:"last_login_at" db:"last_login_at"`
 }
 
@@ -33,23 +33,23 @@ type Person struct {
 }
 
 type InviteCode struct {
-	ID               int64      `json:"id" db:"id"`
-	PersonID         int64      `json:"person_id" db:"person_id"`
-	CodeHash         string     `json:"-" db:"code_hash"`
-	CodePrefix       string     `json:"code_prefix" db:"code_prefix"`
-	Enabled          bool       `json:"enabled" db:"enabled"`
-	MaxActivations   int        `json:"max_activations" db:"max_activations"`
-	ActivationsUsed  int        `json:"activations_used" db:"activations_used"`
-	ExpiresAt        time.Time  `json:"expires_at" db:"expires_at"`
-	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
-	CreatedByAdminID int64      `json:"created_by_admin_id" db:"created_by_admin_id"`
+	ID               int64     `json:"id" db:"id"`
+	PersonID         int64     `json:"person_id" db:"person_id"`
+	CodeHash         string    `json:"-" db:"code_hash"`
+	CodePrefix       string    `json:"code_prefix" db:"code_prefix"`
+	Enabled          bool      `json:"enabled" db:"enabled"`
+	MaxActivations   int       `json:"max_activations" db:"max_activations"`
+	ActivationsUsed  int       `json:"activations_used" db:"activations_used"`
+	ExpiresAt        time.Time `json:"expires_at" db:"expires_at"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	CreatedByAdminID int64     `json:"created_by_admin_id" db:"created_by_admin_id"`
 }
 
 type DeviceSession struct {
-	ID                int64      `json:"id" db:"id"`
-	PersonID          *int64     `json:"person_id,omitempty" db:"person_id"`
-	AdminID           *int64     `json:"admin_id,omitempty" db:"admin_id"`
-	IsAdmin           bool       `json:"is_admin" db:"is_admin"`
+	ID       int64  `json:"id" db:"id"`
+	PersonID *int64 `json:"person_id,omitempty" db:"person_id"`
+	AdminID  *int64 `json:"admin_id,omitempty" db:"admin_id"`
+	IsAdmin  bool   `json:"is_admin" db:"is_admin"`
 
 	Name              string     `json:"name" db:"name"`
 	SessionTokenHash  string     `json:"-" db:"session_token_hash"`
@@ -97,31 +97,31 @@ const (
 )
 
 type FileRecord struct {
-	ID            string     `json:"id" db:"id"`
-	PersonID      int64      `json:"person_id" db:"person_id"`
-	UploaderName  string     `json:"uploader_name" db:"uploader_name"`
-	OriginalName  string     `json:"original_name" db:"original_name"`
-	StoredPath    string     `json:"stored_path" db:"stored_path"`
-	Size          int64      `json:"size" db:"size"`
-	ContentType   string     `json:"content_type" db:"content_type"`
-	Status        FileStatus `json:"status" db:"status"`
-	Flagged       bool       `json:"flagged" db:"flagged"`
-	FlagReason    string     `json:"flag_reason" db:"flag_reason"`
-	Protected     bool       `json:"protected" db:"protected"`
-	KeepForever   bool       `json:"keep_forever" db:"keep_forever"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty" db:"expires_at"`
-	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
-	ClientIPHash  string     `json:"client_ip_hash" db:"client_ip_hash"`
+	ID           string     `json:"id" db:"id"`
+	PersonID     int64      `json:"person_id" db:"person_id"`
+	UploaderName string     `json:"uploader_name" db:"uploader_name"`
+	OriginalName string     `json:"original_name" db:"original_name"`
+	StoredPath   string     `json:"stored_path" db:"stored_path"`
+	Size         int64      `json:"size" db:"size"`
+	ContentType  string     `json:"content_type" db:"content_type"`
+	Status       FileStatus `json:"status" db:"status"`
+	Flagged      bool       `json:"flagged" db:"flagged"`
+	FlagReason   string     `json:"flag_reason" db:"flag_reason"`
+	Protected    bool       `json:"protected" db:"protected"`
+	KeepForever  bool       `json:"keep_forever" db:"keep_forever"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty" db:"expires_at"`
+	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
+	ClientIPHash string     `json:"client_ip_hash" db:"client_ip_hash"`
 }
 
 type TrafficCounter struct {
-	PersonID              int64     `json:"person_id" db:"person_id"`
-	Month                 string    `json:"month" db:"month"` // YYYY-MM
+	PersonID               int64     `json:"person_id" db:"person_id"`
+	Month                  string    `json:"month" db:"month"` // YYYY-MM
 	UploadCompletedBytes   int64     `json:"upload_completed_bytes" db:"upload_completed_bytes"`
 	UploadAbortedBytes     int64     `json:"upload_aborted_bytes" db:"upload_aborted_bytes"`
 	DownloadCompletedBytes int64     `json:"download_completed_bytes" db:"download_completed_bytes"`
 	DownloadAbortedBytes   int64     `json:"download_aborted_bytes" db:"download_aborted_bytes"`
-	UpdatedAt             time.Time `json:"updated_at" db:"updated_at"`
+	UpdatedAt              time.Time `json:"updated_at" db:"updated_at"`
 }
 
 type AuditLog struct {
